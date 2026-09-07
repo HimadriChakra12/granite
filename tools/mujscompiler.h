@@ -166,7 +166,42 @@ typedef struct {
 
 enum { MUJS_FRAME_PLAIN, MUJS_FRAME_DEFINE, MUJS_FRAME_FUNCTION };
 
-static const char *MUJS_KEYWORD_ARGS[] = { "focus", "click", "longpress", "doubleclick", "goto", "gotourl", NULL };
+typedef struct { const char *name; int quote_args; } mujs_kwspec_t;
+
+/* quote_args = how many LEADING arguments are always simple bare words
+ * (keys/directions) that should be auto-quoted. Anything past that is
+ * left completely alone by this pass, since it may be an arbitrary
+ * expression (a selector string, a function identifier, a nested
+ * goto(...) call) that a naive comma-scan would mis-parse. */
+static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
+    { "focus", 1 }, { "click", 1 }, { "longpress", 1 }, { "doubleclick", 1 },
+    { "goto", 1 }, { "gotourl", 1 },
+    { "scroll", 3 }, /* key, up/down, and percentage-or-"full" -- all three are simple bare words when given as identifiers */
+    { NULL, 0 }
+};
+
+/* If *pi points at a bare identifier immediately followed (after
+ * whitespace) by ',' or ')', wrap it in quotes in `out` and advance *pi
+ * past it. Otherwise leaves *pi untouched -- the caller's normal
+ * character-by-character loop handles whatever's actually there. */
+static void mujs__maybe_quote_bare_arg(const char *src, size_t srclen, size_t *pi, char *out, size_t *po) {
+    size_t i = *pi, o = *po;
+    if (i < srclen && (isalpha((unsigned char)src[i]) || src[i] == '_')) {
+        size_t ts = i;
+        while (i < srclen && (isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
+        size_t te = i;
+        size_t p2 = i;
+        while (p2 < srclen && isspace((unsigned char)src[p2])) p2++;
+        if (p2 < srclen && (src[p2] == ',' || src[p2] == ')')) {
+            out[o++] = '"';
+            memcpy(out + o, src + ts, te - ts); o += (te - ts);
+            out[o++] = '"';
+        } else {
+            memcpy(out + o, src + ts, te - ts); o += (te - ts);
+        }
+    }
+    *pi = i; *po = o;
+}
 
 static char *mujs__preprocess(const char *src, mujs_dsl_t *dsl) {
     size_t srclen = strlen(src);
@@ -268,40 +303,38 @@ static char *mujs__preprocess(const char *src, mujs_dsl_t *dsl) {
             }
         }
 
-        /* auto-quote a bare key/dir identifier as the first arg to
-         * focus/click/longpress/doubleclick/goto */
+        /* auto-quote bare key/dir identifiers as the leading argument(s)
+         * to focus/click/longpress/doubleclick/goto/gotourl/scroll */
         {
             int matched_kw = -1;
-            for (int kwi = 0; MUJS_KEYWORD_ARGS[kwi]; kwi++) {
-                size_t klen = strlen(MUJS_KEYWORD_ARGS[kwi]);
+            for (int kwi = 0; MUJS_KEYWORD_ARGS[kwi].name; kwi++) {
+                size_t klen = strlen(MUJS_KEYWORD_ARGS[kwi].name);
                 if ((i == 0 || (!isalnum((unsigned char)src[i - 1]) && src[i - 1] != '_')) &&
-                    strncmp(src + i, MUJS_KEYWORD_ARGS[kwi], klen) == 0 &&
+                    strncmp(src + i, MUJS_KEYWORD_ARGS[kwi].name, klen) == 0 &&
                     !isalnum((unsigned char)src[i + klen]) && src[i + klen] != '_') {
                     matched_kw = kwi;
                     break;
                 }
             }
             if (matched_kw >= 0) {
-                size_t klen = strlen(MUJS_KEYWORD_ARGS[matched_kw]);
+                size_t klen = strlen(MUJS_KEYWORD_ARGS[matched_kw].name);
                 size_t j = i + klen;
                 while (j < srclen && isspace((unsigned char)src[j])) j++;
                 if (j < srclen && src[j] == '(') {
                     size_t chunk = (j + 1) - i;
                     memcpy(out + o, src + i, chunk); o += chunk;
                     i = j + 1;
-                    while (i < srclen && isspace((unsigned char)src[i])) out[o++] = src[i++];
-                    if (i < srclen && (isalpha((unsigned char)src[i]) || src[i] == '_')) {
-                        size_t ts = i;
-                        while (i < srclen && (isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
-                        size_t te = i;
-                        size_t p2 = i;
-                        while (p2 < srclen && isspace((unsigned char)src[p2])) p2++;
-                        if (p2 < srclen && (src[p2] == ',' || src[p2] == ')')) {
-                            out[o++] = '"';
-                            memcpy(out + o, src + ts, te - ts); o += (te - ts);
-                            out[o++] = '"';
-                        } else {
-                            memcpy(out + o, src + ts, te - ts); o += (te - ts);
+
+                    int n_args = MUJS_KEYWORD_ARGS[matched_kw].quote_args;
+                    for (int argn = 0; argn < n_args; argn++) {
+                        while (i < srclen && isspace((unsigned char)src[i])) out[o++] = src[i++];
+                        size_t before = i;
+                        mujs__maybe_quote_bare_arg(src, srclen, &i, out, &o);
+                        if (i == before) break; /* not a bare identifier -- stop, leave the rest alone */
+                        if (argn + 1 < n_args) {
+                            while (i < srclen && isspace((unsigned char)src[i])) out[o++] = src[i++];
+                            if (i < srclen && src[i] == ',') { out[o++] = src[i++]; }
+                            else break; /* no further argument -- nothing more to quote */
                         }
                     }
                     continue;
@@ -399,6 +432,38 @@ static void mujs_native_gotourl(js_State *J) {
     js_pushundefined(J);
 }
 
+/* scroll(key, up/down, percentage) -- percentage is relative to the
+ * viewport height (50 = half a screen, 100 = a full screen), same idea
+ * as vimium's d/u vs space/shift-space. Pass the word `full` instead of
+ * a number to scroll all the way to the top/bottom of the whole page,
+ * not just one screen's worth. */
+static void mujs_native_scroll(js_State *J) {
+    mujs_site_t *s = &mujs__ctx(J)->site;
+    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+
+    const char *dir = js_tostring(J, 2);
+    if (strcmp(dir, "up") != 0 && strcmp(dir, "down") != 0)
+        mujs__reject(J, "scroll() direction must be up or down");
+
+    mujs_binding_t *b = &s->bindings[s->binding_count++];
+    snprintf(b->action, sizeof(b->action), "scroll");
+    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+    snprintf(b->kind, sizeof(b->kind), "scroll");
+    snprintf(b->dir, sizeof(b->dir), "%s", dir);
+
+    if (js_isstring(J, 3)) {
+        if (strcmp(js_tostring(J, 3), "full") != 0)
+            mujs__reject(J, "scroll()'s third argument must be a percentage number, or the word full");
+        /* Infinity is a real JS global -- window.scrollBy clamps to the
+         * document's actual top/bottom automatically, no core.js
+         * special-casing needed. */
+        snprintf(b->value, sizeof(b->value), "Infinity");
+    } else {
+        snprintf(b->value, sizeof(b->value), "%g", js_tonumber(J, 3));
+    }
+    js_pushundefined(J);
+}
+
 static const char *mujs__lookup_func_source(mujs_dsl_t *dsl, const char *name) {
     for (int i = 0; i < dsl->func_count; i++)
         if (strcmp(dsl->funcs[i].name, name) == 0)
@@ -476,6 +541,7 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_loop, "loop", 2);             js_setglobal(J, "loop");
     js_newcfunction(J, mujs_native_goto, "goto", 2);             js_setglobal(J, "goto");
     js_newcfunction(J, mujs_native_gotourl, "gotourl", 2);       js_setglobal(J, "gotourl");
+    js_newcfunction(J, mujs_native_scroll, "scroll", 3);         js_setglobal(J, "scroll");
     js_newcfunction(J, mujs_native_focus, "focus", 2);           js_setglobal(J, "focus");
     js_newcfunction(J, mujs_native_click, "click", 2);           js_setglobal(J, "click");
     js_newcfunction(J, mujs_native_longpress, "longpress", 2);   js_setglobal(J, "longpress");
@@ -536,6 +602,10 @@ static char *mujs__emit_site(const mujs_site_t *s) {
         } else if (strcmp(b->kind, "url") == 0) {
             n += snprintf(out + n, cap - n, ", value: ");
             mujs__json_escape(out, cap, &n, b->value);
+        } else if (strcmp(b->kind, "scroll") == 0) {
+            n += snprintf(out + n, cap - n, ", dir: ");
+            mujs__json_escape(out, cap, &n, b->dir);
+            n += snprintf(out + n, cap - n, ", amount: %s", b->value); /* a real number, not a string */
         } else if (strcmp(b->kind, "function") == 0) {
             n += snprintf(out + n, cap - n, ", value: (%s)", b->value); /* a REAL function, not a string */
         } else if (strcmp(b->kind, "goto") == 0) {

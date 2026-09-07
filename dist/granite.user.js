@@ -121,6 +121,15 @@ function doDoubleclick(el) {
 	fireMouseEvent(el, "dblclick");
 }
 
+function doScroll(dir, amount) {
+	if (amount === Infinity) {
+		window.scrollTo({ top: dir === "down" ? 1e9 : 0, behavior: "smooth" });
+		return;
+	}
+	var px = window.innerHeight * (amount / 100);
+	window.scrollBy({ top: dir === "down" ? px : -px, behavior: "smooth" });
+}
+
 var ACTIONS = { focus: doFocus, click: doClick, longpress: doLongpress, doubleclick: doDoubleclick };
 
 var MU = { gotoLoop: gotoLoop, highlight: highlight, isVisible: isVisible };
@@ -132,6 +141,10 @@ function performBinding(b) {
 	}
 	if (b.kind === "url") {
 		location.href = b.value; // works for absolute and relative URLs
+		return;
+	}
+	if (b.kind === "scroll") {
+		doScroll(b.dir, b.amount);
 		return;
 	}
 	var el = null;
@@ -208,7 +221,19 @@ Sites.register({
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
-    { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" }
+    { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
+    { keys: "gg", action: "scroll", kind: "scroll", dir: "up", amount: Infinity },
+    { keys: "G", action: "scroll", kind: "scroll", dir: "down", amount: Infinity }
+  ]
+});
+
+Sites.register({
+  name: "DISCORD",
+  match: ["*://discord.com/*"],
+  loops: {},
+  bindings: [
+    { keys: "ss", action: "click", kind: "selector", value: "div[data-dnd-name='সিসিমপুর']" },
+    { keys: "sd", action: "click", kind: "selector", value: "div[data-dnd-name='Da hood']" }
   ]
 });
 
@@ -228,11 +253,24 @@ Sites.register({
 
 Sites.register({
   name: "INSTAGRAM",
-  match: ["*://www.instagram.com/direct/*", "*://instagram.com/direct/*"],
-  loops: {},
+  match: ["*://www.instagram.com/*", "*://instagram.com/*"],
+  loops: {"MSGBARBUTTON": "div[class='html-div xdj266r x14z9mp xat24cr x1lziwak xexx8yu xyri2b x18d9i69 x1c1uobl x9f619 xjbqb8w x78zum5 x15mokao x1ga7v0g x16uus16 xbiv7yw x1plvlek xryxfnj x1c4vz4f x2lah0s xdt5ytf xqjyukv x1qjc9v5 x1oa3qoh x1nhvcw1 x3h4tne x145d82y xixxii4']", "MSG": "div[class='x1i10hfl x1qjc9v5 xjbqb8w xjqpnuy xc5r6h4 xqeqjp1 x1phubyo x13fuv20 x18b5jzi x1q0q8m5 x1t7ytsu x972fbf x10w94by x1qhh985 x14e42zd x9f619 x1ypdohk xdl72j9 x2lah0s x3ct3a4 x2lwn1j xeuugli xexx8yu xyri2b x18d9i69 x1c1uobl x1n2onr6 x16tdsg8 x1hl2dhg xggy1nq x1ja2u2z x1t137rt x1q0g3np x87ps6o x1lku1pv x1a2a7pz x4gyw5p xd3so5o x1l895ks x6nl9eh x1a5l9x9 x7vuprf x1mg3h75 x1lliihq xdj266r x14z9mp xat24cr x1lziwak xg6hnt2 x18wri0h']"},
   bindings: [
     { keys: "gi", action: "focus", kind: "selector", value: "div[role='textbox'][aria-placeholder='Message...']" },
-    { keys: "gI", action: "focus", kind: "selector", value: "input[name='searchInput']" }
+    { keys: "gI", action: "focus", kind: "selector", value: "input[name='searchInput']" },
+    { keys: "m", action: "click", kind: "selector", value: "MSGBUTTON" },
+    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "MSG" },
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "MSG" }
+  ]
+});
+
+Sites.register({
+  name: "REDDIT",
+  match: ["https://www.reddit.com/"],
+  loops: {"ARTICLE": "article"},
+  bindings: [
+    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "ARTICLE" },
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "ARTICLE" }
   ]
 });
 

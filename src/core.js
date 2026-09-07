@@ -120,6 +120,20 @@ function doDoubleclick(el) {
 	fireMouseEvent(el, "dblclick");
 }
 
+function doScroll(dir, amount) {
+	// `full` compiles down to Infinity. scrollBy + Infinity is known to
+	// be unreliable in Blink (Chrome/Brave) -- it doesn't always clamp
+	// to the real document edge the way the spec intends. scrollTo with
+	// an oversized but FINITE absolute target does reliably clamp, in
+	// every browser, so that's used instead for the full-page case.
+	if (amount === Infinity) {
+		window.scrollTo({ top: dir === "down" ? 1e9 : 0, behavior: "smooth" });
+		return;
+	}
+	var px = window.innerHeight * (amount / 100);
+	window.scrollBy({ top: dir === "down" ? px : -px, behavior: "smooth" });
+}
+
 var ACTIONS = { focus: doFocus, click: doClick, longpress: doLongpress, doubleclick: doDoubleclick };
 
 // A helper surface handed to site-defined functions (like ANIMATE) so
@@ -136,6 +150,10 @@ function performBinding(b) {
 	}
 	if (b.kind === "url") {
 		location.href = b.value; // works for absolute and relative URLs
+		return;
+	}
+	if (b.kind === "scroll") {
+		doScroll(b.dir, b.amount);
 		return;
 	}
 	var el = null;

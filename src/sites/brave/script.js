@@ -9,4 +9,7 @@ define BRAVE {
 
     // jump straight to the search box
     focus(gi, "input#searchbox")
+
+    scroll(gg, up, full)
+    scroll(G, down, full)
 }
