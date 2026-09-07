@@ -156,6 +156,11 @@ function performBinding(b) {
 		doScroll(b.dir, b.amount);
 		return;
 	}
+	if (b.kind === "history") {
+		if (b.dir === "prev") history.back();
+		else history.forward();
+		return;
+	}
 	var el = null;
 	if (b.kind === "selector") el = document.querySelector(b.value);
 	else if (b.kind === "goto") el = gotoLoop(b.loop, b.dir);

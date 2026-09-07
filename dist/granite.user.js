@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    granite
-// @version      1.0.1
+// @version      2.0.0
 // @description  Persite Keybinding Program
 // @match        *://*/*
 // @//NAME       //Description
@@ -145,6 +145,11 @@ function performBinding(b) {
 	}
 	if (b.kind === "scroll") {
 		doScroll(b.dir, b.amount);
+		return;
+	}
+	if (b.kind === "history") {
+		if (b.dir === "prev") history.back();
+		else history.forward();
 		return;
 	}
 	var el = null;
