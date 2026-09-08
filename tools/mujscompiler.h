@@ -124,6 +124,10 @@ static void mujs_check_bundle(const build_t *b) {
 #define MUJS_MAX_FRAMES 128
 #endif
 
+#ifndef MUJS_MAX_SEL_LOOPS
+#define MUJS_MAX_SEL_LOOPS 16
+#endif
+
 typedef struct {
     char keys[64];             /* e.g. "gi", "j", "xx" -- any key sequence */
     char action[16];           /* focus | click | longpress | doubleclick */
@@ -131,6 +135,8 @@ typedef struct {
     char value[MUJS_VALUE_LEN]; /* selector text, or captured function source */
     char dir[8];                /* next | prev -- only used when kind == goto */
     char loopname[64];          /* only used when kind == goto */
+    char sel_loops[MUJS_MAX_SEL_LOOPS][64]; /* only used when kind == selected; empty = every loop */
+    int  sel_loop_count;
 } mujs_binding_t;
 
 typedef struct {
@@ -174,10 +180,11 @@ typedef struct { const char *name; int quote_args; } mujs_kwspec_t;
  * expression (a selector string, a function identifier, a nested
  * goto(...) call) that a naive comma-scan would mis-parse. */
 static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
-    { "focus", 1 }, { "click", 1 }, { "longpress", 1 }, { "doubleclick", 1 },
+    { "focus", 1 }, { "click", 1 }, { "longpress", 1 }, { "doubleclick", 1 }, { "opennew", 1 },
     { "goto", 1 }, { "gotourl", 1 },
     { "scroll", 3 }, /* key, up/down, and percentage-or-"full" -- all three are simple bare words when given as identifiers */
     { "navigate", 2 }, /* key, prev/next */
+    { "close", 1 }, /* key only */
     { NULL, 0 }
 };
 
@@ -418,6 +425,23 @@ static void mujs_native_goto(js_State *J) {
     js_setproperty(J, -2, "loop");
 }
 
+/* selected(...) -- a marker object like goto(...), but variadic:
+ * selected() means every loop's current cursor item; selected("MSG",
+ * "RESULT") restricts it to just those named loops. Performs no action
+ * itself -- focus()/click()/etc apply the action to each resolved item. */
+static void mujs_native_selected(js_State *J) {
+    int argc = js_gettop(J) - 1; /* stack slot 0 is `this` */
+    js_newobject(J);
+    js_pushliteral(J, "__muselected__");
+    js_setproperty(J, -2, "$type");
+    js_newarray(J);
+    for (int i = 0; i < argc; i++) {
+        js_copy(J, i + 1);
+        js_setindex(J, -2, i);
+    }
+    js_setproperty(J, -2, "loops");
+}
+
 /* gotourl(key, "url") -- a binding declarator like focus/click/etc, not a
  * target resolver: pressing `key` just navigates the page there. Accepts
  * absolute ("https://...") or relative ("/settings") URLs, used as-is by
@@ -502,18 +526,36 @@ static void mujs__bind(js_State *J, const char *action) {
 
     } else if (js_isobject(J, 2)) {
         js_getproperty(J, 2, "$type");
-        int is_goto = js_isstring(J, -1) && strcmp(js_tostring(J, -1), "__mugoto__") == 0;
+        const char *type = js_isstring(J, -1) ? js_tostring(J, -1) : "";
+        int is_goto = strcmp(type, "__mugoto__") == 0;
+        int is_selected = strcmp(type, "__muselected__") == 0;
         js_pop(J, 1);
-        if (!is_goto) mujs__reject(J, "focus()/click()/etc expects a selector, a function, or goto(...)");
-        snprintf(b->kind, sizeof(b->kind), "goto");
-        js_getproperty(J, 2, "dir");
-        snprintf(b->dir, sizeof(b->dir), "%s", js_tostring(J, -1));
-        js_pop(J, 1);
-        js_getproperty(J, 2, "loop");
-        snprintf(b->loopname, sizeof(b->loopname), "%s", js_tostring(J, -1));
-        js_pop(J, 1);
+
+        if (is_selected) {
+            snprintf(b->kind, sizeof(b->kind), "selected");
+            js_getproperty(J, 2, "loops");
+            int n = js_getlength(J, -1);
+            if (n > MUJS_MAX_SEL_LOOPS) mujs__reject(J, "too many loop names passed to selected() (raise MUJS_MAX_SEL_LOOPS)");
+            for (int i = 0; i < n; i++) {
+                js_getindex(J, -1, i);
+                snprintf(b->sel_loops[i], sizeof(b->sel_loops[i]), "%s", js_tostring(J, -1));
+                js_pop(J, 1);
+            }
+            b->sel_loop_count = n;
+            js_pop(J, 1); /* the loops array */
+        } else if (is_goto) {
+            snprintf(b->kind, sizeof(b->kind), "goto");
+            js_getproperty(J, 2, "dir");
+            snprintf(b->dir, sizeof(b->dir), "%s", js_tostring(J, -1));
+            js_pop(J, 1);
+            js_getproperty(J, 2, "loop");
+            snprintf(b->loopname, sizeof(b->loopname), "%s", js_tostring(J, -1));
+            js_pop(J, 1);
+        } else {
+            mujs__reject(J, "focus()/click()/etc expects a selector, a function, goto(...), or selected");
+        }
     } else {
-        mujs__reject(J, "focus()/click()/etc expects a selector, a function, or goto(...)");
+        mujs__reject(J, "focus()/click()/etc expects a selector, a function, goto(...), or selected");
     }
     js_pushundefined(J);
 }
@@ -539,6 +581,21 @@ static void mujs_native_focus(js_State *J)       { mujs__bind(J, "focus"); }
 static void mujs_native_click(js_State *J)       { mujs__bind(J, "click"); }
 static void mujs_native_longpress(js_State *J)   { mujs__bind(J, "longpress"); }
 static void mujs_native_doubleclick(js_State *J) { mujs__bind(J, "doubleclick"); }
+static void mujs_native_opennew(js_State *J)     { mujs__bind(J, "opennew"); }
+
+/* close(key) -- closes the tab/window. Note: browsers only actually let
+ * a script close a tab it opened itself (via window.open); on a normal,
+ * user-opened tab this will silently do nothing -- that's a browser
+ * security restriction, not a bug here. */
+static void mujs_native_close(js_State *J) {
+    mujs_site_t *s = &mujs__ctx(J)->site;
+    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+    mujs_binding_t *b = &s->bindings[s->binding_count++];
+    snprintf(b->action, sizeof(b->action), "close");
+    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+    snprintf(b->kind, sizeof(b->kind), "close");
+    js_pushundefined(J);
+}
 
 static void mujs_native_define(js_State *J) {
     mujs_site_t *s = &mujs__ctx(J)->site;
@@ -561,10 +618,19 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_gotourl, "gotourl", 2);       js_setglobal(J, "gotourl");
     js_newcfunction(J, mujs_native_scroll, "scroll", 3);         js_setglobal(J, "scroll");
     js_newcfunction(J, mujs_native_navigate, "navigate", 2);     js_setglobal(J, "navigate");
+    js_newcfunction(J, mujs_native_close, "close", 1);           js_setglobal(J, "close");
     js_newcfunction(J, mujs_native_focus, "focus", 2);           js_setglobal(J, "focus");
     js_newcfunction(J, mujs_native_click, "click", 2);           js_setglobal(J, "click");
     js_newcfunction(J, mujs_native_longpress, "longpress", 2);   js_setglobal(J, "longpress");
     js_newcfunction(J, mujs_native_doubleclick, "doubleclick", 2); js_setglobal(J, "doubleclick");
+    js_newcfunction(J, mujs_native_opennew, "opennew", 2);       js_setglobal(J, "opennew");
+
+    /* `selected(...)` -- a call (not a bare value): selected() means
+     * every loop's current cursor item; selected("MSG","RESULT") means
+     * just those named loops' current items. Variadic -- declared
+     * length 0, actual arg count read via js_gettop at call time. */
+    js_newcfunction(J, mujs_native_selected, "selected", 0);
+    js_setglobal(J, "selected");
 }
 
 /* ---- serialize a compiled mujs_site_t into Sites.register({...}) ------- */
@@ -635,6 +701,13 @@ static char *mujs__emit_site(const mujs_site_t *s) {
             mujs__json_escape(out, cap, &n, b->dir);
             n += snprintf(out + n, cap - n, ", loop: ");
             mujs__json_escape(out, cap, &n, b->loopname);
+        } else if (strcmp(b->kind, "selected") == 0) {
+            n += snprintf(out + n, cap - n, ", loops: [");
+            for (int li = 0; li < b->sel_loop_count; li++) {
+                if (li) { out[n++] = ','; out[n++] = ' '; }
+                mujs__json_escape(out, cap, &n, b->sel_loops[li]);
+            }
+            n += snprintf(out + n, cap - n, "]");
         }
         n += snprintf(out + n, cap - n, " }%s\n", (i + 1 < s->binding_count) ? "," : "");
     }

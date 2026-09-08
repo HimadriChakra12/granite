@@ -10,4 +10,6 @@ define SPOTIFY {
     click(L , "button[aria-label='Lyrics']")
     click(m , "button[aria-label='Mute'] , button[aria-label='Unmute']")
     click(f , "button[aria-label='Enter Full screen']")
+
+    click(enter, selected())
 }

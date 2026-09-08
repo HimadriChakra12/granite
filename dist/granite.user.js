@@ -51,25 +51,87 @@ function siteMatches(site) {
 	});
 }
 
+function isUniversal(site) {
+	return !(site.match && site.match.length);
+}
+
 function activeSite() {
 	for (var i = 0; i < Sites.list.length; i++) {
-		if (siteMatches(Sites.list[i])) return Sites.list[i];
+		var site = Sites.list[i];
+		if (!isUniversal(site) && siteMatches(site)) return site;
 	}
 	return null;
 }
 
+function universalSites() {
+	return Sites.list.filter(isUniversal);
+}
+
 function effectiveBindings() {
-	var site = activeSite();
-	var siteBindings = site ? site.bindings : [];
 	var seen = {};
-	siteBindings.forEach(function (b) { seen[b.keys] = true; });
-	var defaults = DEFAULT_BINDINGS.filter(function (b) { return !seen[b.keys]; });
-	return siteBindings.concat(defaults);
+	var result = [];
+	function addAll(bindings) {
+		bindings.forEach(function (b) {
+			if (!seen[b.keys]) { seen[b.keys] = true; result.push(b); }
+		});
+	}
+
+	var specific = activeSite();
+	if (specific) addAll(specific.bindings);
+	universalSites().forEach(function (site) { addAll(site.bindings); });
+	addAll(DEFAULT_BINDINGS);
+
+	return result;
+}
+
+function findLoopSelector(loopName) {
+	var specific = activeSite();
+	if (specific && specific.loops && specific.loops[loopName]) return specific.loops[loopName];
+	var universal = universalSites();
+	for (var i = 0; i < universal.length; i++) {
+		if (universal[i].loops && universal[i].loops[loopName]) return universal[i].loops[loopName];
+	}
+	return null;
 }
 
 
-var loopCursor = {};       // loopName -> current index
+var loopCursor = {};       // loopName -> the actual highlighted Element (not an index -- see gotoLoop)
 var lastHighlighted = null;
+
+function resolveSelected(loopNames) {
+	var names = (loopNames && loopNames.length) ? loopNames : Object.keys(loopCursor);
+	return names.map(function (n) { return loopCursor[n]; })
+		.filter(function (el) { return el && el.isConnected; });
+}
+
+var scrollAnimId = null;
+
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+function animateScrollTop(container, targetTop, duration) {
+	if (scrollAnimId) cancelAnimationFrame(scrollAnimId);
+	var startTop = container.scrollTop;
+	var delta = targetTop - startTop;
+	var startTime = null;
+
+	function step(ts) {
+		if (startTime === null) startTime = ts;
+		var t = Math.min((ts - startTime) / duration, 1);
+		container.scrollTop = startTop + delta * easeOutCubic(t);
+		scrollAnimId = (t < 1) ? requestAnimationFrame(step) : null;
+	}
+	scrollAnimId = requestAnimationFrame(step);
+}
+
+function scrollParentOf(el) {
+	var node = el.parentElement;
+	while (node) {
+		var style = getComputedStyle(node);
+		if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+		node = node.parentElement;
+	}
+	return document.scrollingElement || document.documentElement;
+}
 
 function highlight(el) {
 	if (lastHighlighted && lastHighlighted !== el) {
@@ -77,25 +139,38 @@ function highlight(el) {
 	}
 	if (el) {
 		el.classList.add("mu-cursor");
-		el.scrollIntoView({ block: "center", behavior: "smooth" });
+
+		var container = scrollParentOf(el);
+		var elRect = el.getBoundingClientRect();
+		var containerRect = (container === document.scrollingElement || container === document.documentElement)
+			? { top: 0, height: window.innerHeight }
+			: container.getBoundingClientRect();
+		var delta = (elRect.top - containerRect.top) - (containerRect.height / 2 - elRect.height / 2);
+		animateScrollTop(container, container.scrollTop + delta, 180);
 	}
 	lastHighlighted = el;
 }
 
 function gotoLoop(loopName, dir) {
-	var site = activeSite();
-	var selector = site && site.loops && site.loops[loopName];
+	var selector = findLoopSelector(loopName);
 	if (!selector) return null;
 
 	var els = Array.prototype.slice.call(document.querySelectorAll(selector));
 	if (!els.length) return null;
 
-	var idx = loopCursor.hasOwnProperty(loopName) ? loopCursor[loopName] : -1;
+	var prevEl = loopCursor.hasOwnProperty(loopName) ? loopCursor[loopName] : null;
+	var idx = prevEl ? els.indexOf(prevEl) : -1;
+	var recycled = !!prevEl && idx === -1; // had a target, but it's no longer in the DOM/set
+
+	if (idx === -1) idx = (dir === "next") ? -1 : els.length; // lands on the right edge after +1/-1 below
 	if (dir === "next") idx = Math.min(idx + 1, els.length - 1);
 	else idx = Math.max(idx - 1, 0);
-	loopCursor[loopName] = idx;
 
 	var el = els[idx];
+	loopCursor[loopName] = el;
+
+	console.log("[site-vim] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
+		loopName, dir, els.length, idx, recycled ? " (previous target was recycled out of the DOM)" : "", el);
 	highlight(el);
 	return el;
 }
@@ -122,15 +197,25 @@ function doDoubleclick(el) {
 }
 
 function doScroll(dir, amount) {
+	var container = document.scrollingElement || document.documentElement;
 	if (amount === Infinity) {
-		window.scrollTo({ top: dir === "down" ? 1e9 : 0, behavior: "smooth" });
+		var maxTop = container.scrollHeight - container.clientHeight;
+		animateScrollTop(container, dir === "down" ? maxTop : 0, 220);
 		return;
 	}
 	var px = window.innerHeight * (amount / 100);
-	window.scrollBy({ top: dir === "down" ? px : -px, behavior: "smooth" });
+	animateScrollTop(container, container.scrollTop + (dir === "down" ? px : -px), 180);
 }
 
-var ACTIONS = { focus: doFocus, click: doClick, longpress: doLongpress, doubleclick: doDoubleclick };
+function doOpenNew(el) {
+	if (!el) return;
+	var href = (el.tagName === "A" && el.href) ? el.href
+		: (el.closest && el.closest("a[href]") ? el.closest("a[href]").href
+		: (el.querySelector && el.querySelector("a[href]") ? el.querySelector("a[href]").href : null));
+	if (href) window.open(href, "_blank", "noopener");
+}
+
+var ACTIONS = { focus: doFocus, click: doClick, longpress: doLongpress, doubleclick: doDoubleclick, opennew: doOpenNew };
 
 var MU = { gotoLoop: gotoLoop, highlight: highlight, isVisible: isVisible };
 
@@ -152,6 +237,15 @@ function performBinding(b) {
 		else history.forward();
 		return;
 	}
+	if (b.kind === "close") {
+		window.close();
+		return;
+	}
+	if (b.kind === "selected") {
+		var act = ACTIONS[b.action];
+		if (act) resolveSelected(b.loops).forEach(act);
+		return;
+	}
 	var el = null;
 	if (b.kind === "selector") el = document.querySelector(b.value);
 	else if (b.kind === "goto") el = gotoLoop(b.loop, b.dir);
@@ -165,6 +259,38 @@ var keyBuffer = "";
 var keyTimer = null;
 var SEQUENCE_TIMEOUT_MS = 1000;
 
+var lastFiredKeys = null;
+var lastFiredTime = 0;
+var MIN_REPEAT_MS = 120;
+
+var NAMED_KEYS = {
+	" ": "space",
+	"Enter": "enter",
+	"Tab": "tab",
+	"Backspace": "backspace",
+	"Delete": "delete",
+	"ArrowUp": "up",
+	"ArrowDown": "down",
+	"ArrowLeft": "left",
+	"ArrowRight": "right",
+	"Home": "home",
+	"End": "end",
+	"PageUp": "pageup",
+	"PageDown": "pagedown",
+	"Insert": "insert"
+};
+
+var IGNORED_RAW_KEYS = {
+	Shift: 1, Control: 1, Alt: 1, Meta: 1, CapsLock: 1,
+	AltGraph: 1, NumLock: 1, ScrollLock: 1, ContextMenu: 1
+};
+
+function normalizeKey(rawKey) {
+	if (NAMED_KEYS.hasOwnProperty(rawKey)) return NAMED_KEYS[rawKey];
+	if (rawKey.length === 1) return rawKey;
+	return rawKey.toLowerCase(); // any other named key not listed above (F1, etc.)
+}
+
 function isEditableTarget(el) {
 	if (!el) return false;
 	var tag = el.tagName;
@@ -176,18 +302,28 @@ function resetKeyBuffer() {
 	if (keyTimer) { clearTimeout(keyTimer); keyTimer = null; }
 }
 
+function clearAllHighlights() {
+	if (lastHighlighted) {
+		lastHighlighted.classList.remove("mu-cursor");
+		lastHighlighted = null;
+	}
+	loopCursor = {};
+}
+
 document.addEventListener("keydown", function (ev) {
 	if (ev.key === "Escape") {
 		if (isEditableTarget(ev.target) && ev.target.blur) ev.target.blur();
+		clearAllHighlights();
 		resetKeyBuffer();
 		return;
 	}
 
 	if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
 	if (isEditableTarget(ev.target)) return; // don't hijack typing; gi/gI got you here
-	if (ev.key.length !== 1) return; // ignore bare modifiers/arrows/etc
+	if (IGNORED_RAW_KEYS[ev.key]) return;
 
-	var candidate = keyBuffer + ev.key;
+	var key = normalizeKey(ev.key);
+	var candidate = keyBuffer + key;
 	var bindings = effectiveBindings();
 
 	var exact = bindings.filter(function (b) { return b.keys === candidate; });
@@ -195,17 +331,29 @@ document.addEventListener("keydown", function (ev) {
 
 	if (exact.length) {
 		ev.preventDefault();
-		performBinding(exact[0]);
+		var now = Date.now();
+		var tooSoon = candidate === lastFiredKeys && (now - lastFiredTime) < MIN_REPEAT_MS;
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
+			key, ev.key, candidate, ev.repeat,
+			tooSoon ? "THROTTLED (" + (now - lastFiredTime) + "ms since last fire)"
+			        : "fired: " + JSON.stringify(exact[0]));
+		if (!tooSoon) {
+			performBinding(exact[0]);
+			lastFiredKeys = candidate;
+			lastFiredTime = now;
+		}
 		resetKeyBuffer();
 		return;
 	}
 
 	if (stillPossible) {
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
 		ev.preventDefault();
 		keyBuffer = candidate;
 		if (keyTimer) clearTimeout(keyTimer);
 		keyTimer = setTimeout(resetKeyBuffer, SEQUENCE_TIMEOUT_MS);
 	} else {
+		if (candidate.length) console.log("[site-vim] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
 		resetKeyBuffer();
 	}
 }, true);
@@ -224,8 +372,25 @@ Sites.register({
   match: ["*://search.brave.com/*"],
   loops: {"RESULT": ".title.search-snippet-title.line-clamp-1.svelte-14r20fy"},
   bindings: [
+    { keys: "x", action: "close", kind: "close" },
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
+    { keys: "enter", action: "click", kind: "selected", loops: ["RESULT"] },
+    { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
+    { keys: "gg", action: "scroll", kind: "scroll", dir: "up", amount: Infinity },
+    { keys: "G", action: "scroll", kind: "scroll", dir: "down", amount: Infinity },
+    { keys: "q", action: "opennew", kind: "selected", loops: ["RESULT"] }
+  ]
+});
+
+Sites.register({
+  name: "GOOGLE",
+  match: ["*://www.google.com/*"],
+  loops: {"RESULT": "h3.LC20lb.MBeuO.DKV0Md"},
+  bindings: [
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
+    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
+    { keys: "Enter", action: "click", kind: "selected", loops: [] },
     { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
     { keys: "gg", action: "scroll", kind: "scroll", dir: "up", amount: Infinity },
     { keys: "G", action: "scroll", kind: "scroll", dir: "down", amount: Infinity }
@@ -233,12 +398,15 @@ Sites.register({
 });
 
 Sites.register({
-  name: "DISCORD",
-  match: ["*://discord.com/*"],
-  loops: {},
+  name: "GOOGLECALENDER",
+  match: ["*://calendar.google.com/calendar/*"],
+  loops: {"DAY": "[class='MGaLHf ChfiMc']"},
   bindings: [
-    { keys: "ss", action: "click", kind: "selector", value: "div[data-dnd-name='সিসিমপুর']" },
-    { keys: "sd", action: "click", kind: "selector", value: "div[data-dnd-name='Da hood']" }
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "DAY" },
+    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "DAY" },
+    { keys: "h", action: "click", kind: "selector", value: "[aria-label*='Previous']" },
+    { keys: "l", action: "click", kind: "selector", value: "[aria-label*='Next']" },
+    { keys: "Space", action: "click", kind: "selected", loops: ["DAY"] }
   ]
 });
 
@@ -252,20 +420,29 @@ Sites.register({
     { keys: "l", action: "click", kind: "selector", value: "button[aria-label='Add to playlist']" },
     { keys: "L", action: "click", kind: "selector", value: "button[aria-label='Lyrics']" },
     { keys: "m", action: "click", kind: "selector", value: "button[aria-label='Mute'] , button[aria-label='Unmute']" },
-    { keys: "f", action: "click", kind: "selector", value: "button[aria-label='Enter Full screen']" }
+    { keys: "f", action: "click", kind: "selector", value: "button[aria-label='Enter Full screen']" },
+    { keys: "enter", action: "click", kind: "selected", loops: [] }
+  ]
+});
+
+Sites.register({
+  name: "YOUTUBESEARCH",
+  match: ["*://*.youtube.com/results?search_query=*"],
+  loops: {"SRCH": "ytd-video-renderer"},
+  bindings: [
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "SRCH" },
+    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "SRCH" },
+    { keys: "enter", action: "click", kind: "selected", loops: ["SRCH"] }
   ]
 });
 
 Sites.register({
   name: "INSTAGRAM",
-  match: ["*://www.instagram.com/*", "*://instagram.com/*"],
-  loops: {"MSGBARBUTTON": "div[class='html-div xdj266r x14z9mp xat24cr x1lziwak xexx8yu xyri2b x18d9i69 x1c1uobl x9f619 xjbqb8w x78zum5 x15mokao x1ga7v0g x16uus16 xbiv7yw x1plvlek xryxfnj x1c4vz4f x2lah0s xdt5ytf xqjyukv x1qjc9v5 x1oa3qoh x1nhvcw1 x3h4tne x145d82y xixxii4']", "MSG": "div[class='x1i10hfl x1qjc9v5 xjbqb8w xjqpnuy xc5r6h4 xqeqjp1 x1phubyo x13fuv20 x18b5jzi x1q0q8m5 x1t7ytsu x972fbf x10w94by x1qhh985 x14e42zd x9f619 x1ypdohk xdl72j9 x2lah0s x3ct3a4 x2lwn1j xeuugli xexx8yu xyri2b x18d9i69 x1c1uobl x1n2onr6 x16tdsg8 x1hl2dhg xggy1nq x1ja2u2z x1t137rt x1q0g3np x87ps6o x1lku1pv x1a2a7pz x4gyw5p xd3so5o x1l895ks x6nl9eh x1a5l9x9 x7vuprf x1mg3h75 x1lliihq xdj266r x14z9mp xat24cr x1lziwak xg6hnt2 x18wri0h']"},
+  match: ["*://www.instagram.com/direct/*", "*://instagram.com/direct/*"],
+  loops: {},
   bindings: [
     { keys: "gi", action: "focus", kind: "selector", value: "div[role='textbox'][aria-placeholder='Message...']" },
-    { keys: "gI", action: "focus", kind: "selector", value: "input[name='searchInput']" },
-    { keys: "m", action: "click", kind: "selector", value: "MSGBUTTON" },
-    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "MSG" },
-    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "MSG" }
+    { keys: "gI", action: "focus", kind: "selector", value: "input[name='searchInput']" }
   ]
 });
 
@@ -276,6 +453,17 @@ Sites.register({
   bindings: [
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "ARTICLE" },
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "ARTICLE" }
+  ]
+});
+
+Sites.register({
+  name: "UNIVERSAL",
+  match: [],
+  loops: {},
+  bindings: [
+    { keys: "x", action: "close", kind: "close" },
+    { keys: "j", action: "scroll", kind: "scroll", dir: "down", amount: 50 },
+    { keys: "k", action: "scroll", kind: "scroll", dir: "up", amount: 50 }
   ]
 });
 

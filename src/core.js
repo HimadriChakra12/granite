@@ -45,26 +45,114 @@ function siteMatches(site) {
 	});
 }
 
+// A site with NO url() calls at all (match: []) is "universal" -- it
+// applies on every page, not just where its own url() patterns hit.
+function isUniversal(site) {
+	return !(site.match && site.match.length);
+}
+
+// The one specific (non-universal) site whose url() patterns match this
+// page, if any. Still a single-winner model, same as before.
 function activeSite() {
 	for (var i = 0; i < Sites.list.length; i++) {
-		if (siteMatches(Sites.list[i])) return Sites.list[i];
+		var site = Sites.list[i];
+		if (!isUniversal(site) && siteMatches(site)) return site;
 	}
 	return null;
 }
 
+function universalSites() {
+	return Sites.list.filter(isUniversal);
+}
+
+// Precedence, highest first: the active specific site's own bindings,
+// then every universal site's bindings (as a fallback layer any site
+// can share), then the built-in gi/gI defaults. A key already claimed
+// by an earlier layer is never overridden by a later one.
 function effectiveBindings() {
-	var site = activeSite();
-	var siteBindings = site ? site.bindings : [];
 	var seen = {};
-	siteBindings.forEach(function (b) { seen[b.keys] = true; });
-	var defaults = DEFAULT_BINDINGS.filter(function (b) { return !seen[b.keys]; });
-	return siteBindings.concat(defaults);
+	var result = [];
+	function addAll(bindings) {
+		bindings.forEach(function (b) {
+			if (!seen[b.keys]) { seen[b.keys] = true; result.push(b); }
+		});
+	}
+
+	var specific = activeSite();
+	if (specific) addAll(specific.bindings);
+	universalSites().forEach(function (site) { addAll(site.bindings); });
+	addAll(DEFAULT_BINDINGS);
+
+	return result;
+}
+
+// Same precedence as effectiveBindings, for loop()'s selectors: the
+// active specific site's own loops win, universal sites fill any gaps.
+function findLoopSelector(loopName) {
+	var specific = activeSite();
+	if (specific && specific.loops && specific.loops[loopName]) return specific.loops[loopName];
+	var universal = universalSites();
+	for (var i = 0; i < universal.length; i++) {
+		if (universal[i].loops && universal[i].loops[loopName]) return universal[i].loops[loopName];
+	}
+	return null;
 }
 
 // ---- loop / goto cursor --------------------------------------------------
 
-var loopCursor = {};       // loopName -> current index
+var loopCursor = {};       // loopName -> the actual highlighted Element (not an index -- see gotoLoop)
 var lastHighlighted = null;
+
+// Resolves selected(...)'s loop-name list into actual elements: every
+// loop's current cursor item if no names were given, or just the named
+// ones. Filters out loops that have never been visited yet (no cursor
+// set) or whose element has since left the DOM entirely.
+function resolveSelected(loopNames) {
+	var names = (loopNames && loopNames.length) ? loopNames : Object.keys(loopCursor);
+	return names.map(function (n) { return loopCursor[n]; })
+		.filter(function (el) { return el && el.isConnected; });
+}
+
+// ---- self-owned smooth scrolling ------------------------------------------
+//
+// Deliberately NOT using the browser's native `behavior: "smooth"`. Native
+// smooth scrolls don't reliably cancel/retarget when a new one starts
+// before the last one finishes -- especially on custom scroll containers
+// (Instagram's feed, Spotify's list) -- so rapid j/k presses stacked
+// multiple animations and produced exactly the overshoot/"catches up
+// late" glitching seen before. This tiny eased rAF loop is fully owned:
+// every call cancels whatever's still running first, so there's always
+// at most one animation in flight, ever -- smooth to look at, but never
+// stackable.
+var scrollAnimId = null;
+
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+function animateScrollTop(container, targetTop, duration) {
+	if (scrollAnimId) cancelAnimationFrame(scrollAnimId);
+	var startTop = container.scrollTop;
+	var delta = targetTop - startTop;
+	var startTime = null;
+
+	function step(ts) {
+		if (startTime === null) startTime = ts;
+		var t = Math.min((ts - startTime) / duration, 1);
+		container.scrollTop = startTop + delta * easeOutCubic(t);
+		scrollAnimId = (t < 1) ? requestAnimationFrame(step) : null;
+	}
+	scrollAnimId = requestAnimationFrame(step);
+}
+
+// Nearest ancestor that actually scrolls, or the page itself.
+function scrollParentOf(el) {
+	var node = el.parentElement;
+	while (node) {
+		var style = getComputedStyle(node);
+		if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+		node = node.parentElement;
+	}
+	return document.scrollingElement || document.documentElement;
+}
 
 function highlight(el) {
 	if (lastHighlighted && lastHighlighted !== el) {
@@ -72,7 +160,15 @@ function highlight(el) {
 	}
 	if (el) {
 		el.classList.add("mu-cursor");
-		el.scrollIntoView({ block: "center", behavior: "smooth" });
+
+		var container = scrollParentOf(el);
+		var elRect = el.getBoundingClientRect();
+		var containerRect = (container === document.scrollingElement || container === document.documentElement)
+			? { top: 0, height: window.innerHeight }
+			: container.getBoundingClientRect();
+		// same target position "block: center" would compute
+		var delta = (elRect.top - containerRect.top) - (containerRect.height / 2 - elRect.height / 2);
+		animateScrollTop(container, container.scrollTop + delta, 180);
 	}
 	lastHighlighted = el;
 }
@@ -80,20 +176,37 @@ function highlight(el) {
 // dir is clamped, not wrapped, by default -- change Math.min/Math.max
 // below to wrap instead if you'd rather j on the last result cycle back
 // to the first.
+//
+// Tracks the actual highlighted ELEMENT, not a numeric index. Many
+// real lists (Instagram's conversation list, Spotify's track list) are
+// virtualized -- only a small, constantly-changing window of rows
+// exists in the DOM at any moment, recycled as you scroll. A plain
+// index into querySelectorAll's results silently pointed at a
+// different-sized array on every single press, which is what looked
+// like j/k "jumping twice" or overshooting. Re-locating the previous
+// element in the fresh results (and falling back cleanly to an edge if
+// it's been recycled out) is stable regardless of how the underlying
+// list reshuffles.
 function gotoLoop(loopName, dir) {
-	var site = activeSite();
-	var selector = site && site.loops && site.loops[loopName];
+	var selector = findLoopSelector(loopName);
 	if (!selector) return null;
 
 	var els = Array.prototype.slice.call(document.querySelectorAll(selector));
 	if (!els.length) return null;
 
-	var idx = loopCursor.hasOwnProperty(loopName) ? loopCursor[loopName] : -1;
+	var prevEl = loopCursor.hasOwnProperty(loopName) ? loopCursor[loopName] : null;
+	var idx = prevEl ? els.indexOf(prevEl) : -1;
+	var recycled = !!prevEl && idx === -1; // had a target, but it's no longer in the DOM/set
+
+	if (idx === -1) idx = (dir === "next") ? -1 : els.length; // lands on the right edge after +1/-1 below
 	if (dir === "next") idx = Math.min(idx + 1, els.length - 1);
 	else idx = Math.max(idx - 1, 0);
-	loopCursor[loopName] = idx;
 
 	var el = els[idx];
+	loopCursor[loopName] = el;
+
+	console.log("[site-vim] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
+		loopName, dir, els.length, idx, recycled ? " (previous target was recycled out of the DOM)" : "", el);
 	highlight(el);
 	return el;
 }
@@ -121,20 +234,25 @@ function doDoubleclick(el) {
 }
 
 function doScroll(dir, amount) {
-	// `full` compiles down to Infinity. scrollBy + Infinity is known to
-	// be unreliable in Blink (Chrome/Brave) -- it doesn't always clamp
-	// to the real document edge the way the spec intends. scrollTo with
-	// an oversized but FINITE absolute target does reliably clamp, in
-	// every browser, so that's used instead for the full-page case.
+	var container = document.scrollingElement || document.documentElement;
 	if (amount === Infinity) {
-		window.scrollTo({ top: dir === "down" ? 1e9 : 0, behavior: "smooth" });
+		var maxTop = container.scrollHeight - container.clientHeight;
+		animateScrollTop(container, dir === "down" ? maxTop : 0, 220);
 		return;
 	}
 	var px = window.innerHeight * (amount / 100);
-	window.scrollBy({ top: dir === "down" ? px : -px, behavior: "smooth" });
+	animateScrollTop(container, container.scrollTop + (dir === "down" ? px : -px), 180);
 }
 
-var ACTIONS = { focus: doFocus, click: doClick, longpress: doLongpress, doubleclick: doDoubleclick };
+function doOpenNew(el) {
+	if (!el) return;
+	var href = (el.tagName === "A" && el.href) ? el.href
+		: (el.closest && el.closest("a[href]") ? el.closest("a[href]").href
+		: (el.querySelector && el.querySelector("a[href]") ? el.querySelector("a[href]").href : null));
+	if (href) window.open(href, "_blank", "noopener");
+}
+
+var ACTIONS = { focus: doFocus, click: doClick, longpress: doLongpress, doubleclick: doDoubleclick, opennew: doOpenNew };
 
 // A helper surface handed to site-defined functions (like ANIMATE) so
 // they can reuse the same primitives core.js uses internally.
@@ -161,6 +279,22 @@ function performBinding(b) {
 		else history.forward();
 		return;
 	}
+	if (b.kind === "close") {
+		// Browsers only let a script close a tab it opened itself (via
+		// window.open) -- on a normal, user-opened tab this is a no-op
+		// by design, not a bug here.
+		window.close();
+		return;
+	}
+	if (b.kind === "selected") {
+		// Applies the action to MULTIPLE elements at once -- every
+		// named loop's current cursor item (or every loop's, if none
+		// were named). Unlike every other kind, this doesn't resolve
+		// to a single `el`.
+		var act = ACTIONS[b.action];
+		if (act) resolveSelected(b.loops).forEach(act);
+		return;
+	}
 	var el = null;
 	if (b.kind === "selector") el = document.querySelector(b.value);
 	else if (b.kind === "goto") el = gotoLoop(b.loop, b.dir);
@@ -175,6 +309,50 @@ var keyBuffer = "";
 var keyTimer = null;
 var SEQUENCE_TIMEOUT_MS = 1000;
 
+// Throttles repeats of the SAME binding firing again too soon --
+// e.g. mashing j/k faster than a goto()'s cursor jump can settle.
+// Only ever compares against the immediately-preceding fire, so typing
+// a different key, or the same key again after the window has passed,
+// is completely unaffected.
+var lastFiredKeys = null;
+var lastFiredTime = 0;
+var MIN_REPEAT_MS = 120;
+
+// Named keys whose event.key isn't a single printable character, mapped
+// to a lowercase DSL-friendly token -- so `focus(enter, ...)`,
+// `click(space, ...)` etc. actually match. Single characters (g, G, i,
+// I, ...) are left completely alone and stay case-sensitive, since shift
+// state is the whole point there.
+var NAMED_KEYS = {
+	" ": "space",
+	"Enter": "enter",
+	"Tab": "tab",
+	"Backspace": "backspace",
+	"Delete": "delete",
+	"ArrowUp": "up",
+	"ArrowDown": "down",
+	"ArrowLeft": "left",
+	"ArrowRight": "right",
+	"Home": "home",
+	"End": "end",
+	"PageUp": "pageup",
+	"PageDown": "pagedown",
+	"Insert": "insert"
+};
+
+// Bare modifier keydowns (pressing Shift on its own, etc.) carry no
+// useful signal and would otherwise pollute the key buffer.
+var IGNORED_RAW_KEYS = {
+	Shift: 1, Control: 1, Alt: 1, Meta: 1, CapsLock: 1,
+	AltGraph: 1, NumLock: 1, ScrollLock: 1, ContextMenu: 1
+};
+
+function normalizeKey(rawKey) {
+	if (NAMED_KEYS.hasOwnProperty(rawKey)) return NAMED_KEYS[rawKey];
+	if (rawKey.length === 1) return rawKey;
+	return rawKey.toLowerCase(); // any other named key not listed above (F1, etc.)
+}
+
 function isEditableTarget(el) {
 	if (!el) return false;
 	var tag = el.tagName;
@@ -186,20 +364,33 @@ function resetKeyBuffer() {
 	if (keyTimer) { clearTimeout(keyTimer); keyTimer = null; }
 }
 
+// Clears every loop's cursor and removes the highlight -- Escape uses
+// this to fully "break the loop," not just exit insert mode.
+function clearAllHighlights() {
+	if (lastHighlighted) {
+		lastHighlighted.classList.remove("mu-cursor");
+		lastHighlighted = null;
+	}
+	loopCursor = {};
+}
+
 document.addEventListener("keydown", function (ev) {
-	// Escape always exits "insert mode" -- checked before the editable-
-	// target bailout below, since that's precisely when it's needed.
+	// Escape always exits "insert mode" AND breaks any active loop/goto
+	// cursor -- checked before the editable-target bailout below, since
+	// that's precisely when it's needed.
 	if (ev.key === "Escape") {
 		if (isEditableTarget(ev.target) && ev.target.blur) ev.target.blur();
+		clearAllHighlights();
 		resetKeyBuffer();
 		return;
 	}
 
 	if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
 	if (isEditableTarget(ev.target)) return; // don't hijack typing; gi/gI got you here
-	if (ev.key.length !== 1) return; // ignore bare modifiers/arrows/etc
+	if (IGNORED_RAW_KEYS[ev.key]) return;
 
-	var candidate = keyBuffer + ev.key;
+	var key = normalizeKey(ev.key);
+	var candidate = keyBuffer + key;
 	var bindings = effectiveBindings();
 
 	var exact = bindings.filter(function (b) { return b.keys === candidate; });
@@ -207,17 +398,29 @@ document.addEventListener("keydown", function (ev) {
 
 	if (exact.length) {
 		ev.preventDefault();
-		performBinding(exact[0]);
+		var now = Date.now();
+		var tooSoon = candidate === lastFiredKeys && (now - lastFiredTime) < MIN_REPEAT_MS;
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
+			key, ev.key, candidate, ev.repeat,
+			tooSoon ? "THROTTLED (" + (now - lastFiredTime) + "ms since last fire)"
+			        : "fired: " + JSON.stringify(exact[0]));
+		if (!tooSoon) {
+			performBinding(exact[0]);
+			lastFiredKeys = candidate;
+			lastFiredTime = now;
+		}
 		resetKeyBuffer();
 		return;
 	}
 
 	if (stillPossible) {
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
 		ev.preventDefault();
 		keyBuffer = candidate;
 		if (keyTimer) clearTimeout(keyTimer);
 		keyTimer = setTimeout(resetKeyBuffer, SEQUENCE_TIMEOUT_MS);
 	} else {
+		if (candidate.length) console.log("[site-vim] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
 		resetKeyBuffer();
 	}
 }, true);
