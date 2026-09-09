@@ -280,9 +280,11 @@ function performBinding(b) {
 		return;
 	}
 	if (b.kind === "close") {
-		// Browsers only let a script close a tab it opened itself (via
-		// window.open) -- on a normal, user-opened tab this is a no-op
-		// by design, not a bug here.
+		// Privileged via the "window.close" grant declared in build.c
+		// (Tampermonkey/Violentmonkey back this with their own
+		// extension internals) -- unlike ordinary page-JS
+		// window.close(), this actually closes the tab regardless of
+		// how it was opened or its navigation history.
 		window.close();
 		return;
 	}

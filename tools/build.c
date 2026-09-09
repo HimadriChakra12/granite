@@ -12,7 +12,7 @@ listmatch(
     );
 
 listgrant(
-    /* pure DOM APIs only -- no GM_* needed for v1 */
+    "window.close"
     );
 
 listextra(
