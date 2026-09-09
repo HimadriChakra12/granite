@@ -131,7 +131,8 @@ static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
     { "focus", 1 }, { "click", 1 }, { "longpress", 1 }, { "doubleclick", 1 }, { "opennew", 1 },
     { "goto", 1 }, { "gotourl", 1 },
     { "scroll", 3 }, /* key, up/down, and percentage-or-"full" -- all three are simple bare words when given as identifiers */
-    { "navigate", 2 }, /* key, prev/next/reload/close */
+    { "navigate", 2 }, /* key, prev/next */
+    { "action", 2 }, /* key, close/reload */
     { NULL, 0 }
 };
 
@@ -486,14 +487,29 @@ static void mujs_native_navigate(js_State *J) {
     if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
 
     const char *dir = js_tostring(J, 2);
-    if (strcmp(dir, "prev") != 0 && strcmp(dir, "next") != 0 &&
-        strcmp(dir, "reload") != 0 && strcmp(dir, "close") != 0)
-        mujs__reject(J, "navigate() direction must be prev, next, reload, or close");
+    if (strcmp(dir, "prev") != 0 && strcmp(dir, "next") != 0)
+        mujs__reject(J, "navigate() direction must be prev or next");
 
     mujs_binding_t *b = &s->bindings[s->binding_count++];
     snprintf(b->action, sizeof(b->action), "navigate");
     snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
     snprintf(b->kind, sizeof(b->kind), "navigate");
+    snprintf(b->dir, sizeof(b->dir), "%s", dir);
+    js_pushundefined(J);
+}
+
+static void mujs_native_action(js_State *J) {
+    mujs_site_t *s = &mujs__ctx(J)->site;
+    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+
+    const char *dir = js_tostring(J, 2);
+    if (strcmp(dir, "close") != 0 && strcmp(dir, "reload") != 0)
+        mujs__reject(J, "action() must be close or reload");
+
+    mujs_binding_t *b = &s->bindings[s->binding_count++];
+    snprintf(b->action, sizeof(b->action), "action");
+    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+    snprintf(b->kind, sizeof(b->kind), "action");
     snprintf(b->dir, sizeof(b->dir), "%s", dir);
     js_pushundefined(J);
 }
@@ -524,6 +540,7 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_gotourl, "gotourl", 2);       js_setglobal(J, "gotourl");
     js_newcfunction(J, mujs_native_scroll, "scroll", 3);         js_setglobal(J, "scroll");
     js_newcfunction(J, mujs_native_navigate, "navigate", 2);     js_setglobal(J, "navigate");
+    js_newcfunction(J, mujs_native_action, "action", 2);         js_setglobal(J, "action");
     js_newcfunction(J, mujs_native_focus, "focus", 2);           js_setglobal(J, "focus");
     js_newcfunction(J, mujs_native_click, "click", 2);           js_setglobal(J, "click");
     js_newcfunction(J, mujs_native_longpress, "longpress", 2);   js_setglobal(J, "longpress");
@@ -533,8 +550,6 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_selected, "selected", 0);
     js_setglobal(J, "selected");
 }
-
-/* ---- serialize a compiled mujs_site_t into Sites.register({...}) ------- */
 
 static void mujs__json_escape(char *dst, size_t dst_cap, size_t *dst_len, const char *s) {
     dst[(*dst_len)++] = '"';
@@ -593,6 +608,9 @@ static char *mujs__emit_site(const mujs_site_t *s) {
             mujs__json_escape(out, cap, &n, b->dir);
             n += snprintf(out + n, cap - n, ", amount: %s", b->value); /* a real number, not a string */
         } else if (strcmp(b->kind, "navigate") == 0) {
+            n += snprintf(out + n, cap - n, ", dir: ");
+            mujs__json_escape(out, cap, &n, b->dir);
+        } else if (strcmp(b->kind, "action") == 0) {
             n += snprintf(out + n, cap - n, ", dir: ");
             mujs__json_escape(out, cap, &n, b->dir);
         } else if (strcmp(b->kind, "function") == 0) {

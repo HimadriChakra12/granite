@@ -5,5 +5,5 @@ define REDDIT {
     focus(k, goto(prev, "ARTICLE"))
     focus(j, goto(next, "ARTICLE"))
 
-    navigate(x, close)
+    action(x, close)
 }

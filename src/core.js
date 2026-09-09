@@ -205,7 +205,7 @@ function gotoLoop(loopName, dir) {
 	var el = els[idx];
 	loopCursor[loopName] = el;
 
-	console.log("[granite] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
+	console.log("[site-vim] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
 		loopName, dir, els.length, idx, recycled ? " (previous target was recycled out of the DOM)" : "", el);
 	highlight(el);
 	return el;
@@ -276,8 +276,11 @@ function performBinding(b) {
 	}
 	if (b.kind === "navigate") {
 		if (b.dir === "prev") history.back();
-		else if (b.dir === "next") history.forward();
-		else if (b.dir === "reload") location.reload();
+		else history.forward();
+		return;
+	}
+	if (b.kind === "action") {
+		if (b.dir === "reload") location.reload();
 		else if (b.dir === "close") {
 			// Privileged via the "window.close" grant declared in
 			// build.c (Tampermonkey/Violentmonkey back this with
@@ -378,18 +381,30 @@ function clearAllHighlights() {
 }
 
 document.addEventListener("keydown", function (ev) {
+	// Checked against BOTH ev.target and document.activeElement, not
+	// just one -- rich-text editors (Instagram's Lexical editor is one)
+	// do brief internal focus/blur churn where the two can momentarily
+	// disagree. Relying on only one left a gap where a key like the
+	// trailing "g" in "bang" could get swallowed as a potential prefix
+	// of a binding like "gg" instead of being typed, while very much
+	// still inside the input as far as the user could tell.
+	var editing = isEditableTarget(ev.target) || isEditableTarget(document.activeElement);
+
 	// Escape always exits "insert mode" AND breaks any active loop/goto
 	// cursor -- checked before the editable-target bailout below, since
 	// that's precisely when it's needed.
 	if (ev.key === "Escape") {
-		if (isEditableTarget(ev.target) && ev.target.blur) ev.target.blur();
+		if (editing) {
+			if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+			if (ev.target && ev.target.blur) ev.target.blur();
+		}
 		clearAllHighlights();
 		resetKeyBuffer();
 		return;
 	}
 
 	if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
-	if (isEditableTarget(ev.target)) return; // don't hijack typing; gi/gI got you here
+	if (editing) return; // don't hijack typing; gi/gI got you here
 	if (IGNORED_RAW_KEYS[ev.key]) return;
 
 	var key = normalizeKey(ev.key);
@@ -403,7 +418,7 @@ document.addEventListener("keydown", function (ev) {
 		ev.preventDefault();
 		var now = Date.now();
 		var tooSoon = candidate === lastFiredKeys && (now - lastFiredTime) < MIN_REPEAT_MS;
-		console.log("[granite] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
 			key, ev.key, candidate, ev.repeat,
 			tooSoon ? "THROTTLED (" + (now - lastFiredTime) + "ms since last fire)"
 			        : "fired: " + JSON.stringify(exact[0]));
@@ -417,13 +432,13 @@ document.addEventListener("keydown", function (ev) {
 	}
 
 	if (stillPossible) {
-		console.log("[granite] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
 		ev.preventDefault();
 		keyBuffer = candidate;
 		if (keyTimer) clearTimeout(keyTimer);
 		keyTimer = setTimeout(resetKeyBuffer, SEQUENCE_TIMEOUT_MS);
 	} else {
-		if (candidate.length) console.log("[granite] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
+		if (candidate.length) console.log("[site-vim] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
 		resetKeyBuffer();
 	}
 }, true);

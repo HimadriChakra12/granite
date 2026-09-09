@@ -4,8 +4,8 @@
 #include "mujscompiler.h"
 
 #define NAME        "granite"
-#define NAMESPACE   "granite"
-#define DESCRIPTION "Persite Keybinding Program"
+#define NAMESPACE   "https://github.com/HimadriChakra12/granite.git"
+#define DESCRIPTION "A userscript to do almost any type of navigation I want cause I hate vimium"
 
 listmatch(
     "*://*/*",

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         granite
-// @namespace    granite
-// @version      4.0.0
-// @description  Persite Keybinding Program
+// @namespace    https://github.com/HimadriChakra12/granite.git
+// @version      5.0.0
+// @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
 // @//NAME       //Description
@@ -170,7 +170,7 @@ function gotoLoop(loopName, dir) {
 	var el = els[idx];
 	loopCursor[loopName] = el;
 
-	console.log("[granite] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
+	console.log("[site-vim] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
 		loopName, dir, els.length, idx, recycled ? " (previous target was recycled out of the DOM)" : "", el);
 	highlight(el);
 	return el;
@@ -235,8 +235,11 @@ function performBinding(b) {
 	}
 	if (b.kind === "navigate") {
 		if (b.dir === "prev") history.back();
-		else if (b.dir === "next") history.forward();
-		else if (b.dir === "reload") location.reload();
+		else history.forward();
+		return;
+	}
+	if (b.kind === "action") {
+		if (b.dir === "reload") location.reload();
 		else if (b.dir === "close") {
 			window.close();
 		}
@@ -312,15 +315,20 @@ function clearAllHighlights() {
 }
 
 document.addEventListener("keydown", function (ev) {
+	var editing = isEditableTarget(ev.target) || isEditableTarget(document.activeElement);
+
 	if (ev.key === "Escape") {
-		if (isEditableTarget(ev.target) && ev.target.blur) ev.target.blur();
+		if (editing) {
+			if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+			if (ev.target && ev.target.blur) ev.target.blur();
+		}
 		clearAllHighlights();
 		resetKeyBuffer();
 		return;
 	}
 
 	if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
-	if (isEditableTarget(ev.target)) return; // don't hijack typing; gi/gI got you here
+	if (editing) return; // don't hijack typing; gi/gI got you here
 	if (IGNORED_RAW_KEYS[ev.key]) return;
 
 	var key = normalizeKey(ev.key);
@@ -334,7 +342,7 @@ document.addEventListener("keydown", function (ev) {
 		ev.preventDefault();
 		var now = Date.now();
 		var tooSoon = candidate === lastFiredKeys && (now - lastFiredTime) < MIN_REPEAT_MS;
-		console.log("[granite] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
 			key, ev.key, candidate, ev.repeat,
 			tooSoon ? "THROTTLED (" + (now - lastFiredTime) + "ms since last fire)"
 			        : "fired: " + JSON.stringify(exact[0]));
@@ -348,13 +356,13 @@ document.addEventListener("keydown", function (ev) {
 	}
 
 	if (stillPossible) {
-		console.log("[granite] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
+		console.log("[site-vim] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
 		ev.preventDefault();
 		keyBuffer = candidate;
 		if (keyTimer) clearTimeout(keyTimer);
 		keyTimer = setTimeout(resetKeyBuffer, SEQUENCE_TIMEOUT_MS);
 	} else {
-		if (candidate.length) console.log("[granite] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
+		if (candidate.length) console.log("[site-vim] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
 		resetKeyBuffer();
 	}
 }, true);
@@ -380,7 +388,7 @@ Sites.register({
     { keys: "gg", action: "scroll", kind: "scroll", dir: "up", amount: Infinity },
     { keys: "G", action: "scroll", kind: "scroll", dir: "down", amount: Infinity },
     { keys: "q", action: "opennew", kind: "selected", loops: ["RESULT"] },
-    { keys: "x", action: "navigate", kind: "navigate", dir: "close" }
+    { keys: "x", action: "action", kind: "action", dir: "close" }
   ]
 });
 
@@ -422,7 +430,7 @@ Sites.register({
     { keys: "L", action: "click", kind: "selector", value: "button[aria-label='Lyrics']" },
     { keys: "m", action: "click", kind: "selector", value: "button[aria-label='Mute'] , button[aria-label='Unmute']" },
     { keys: "f", action: "click", kind: "selector", value: "button[aria-label='Enter Full screen']" },
-    { keys: "enter", action: "click", kind: "selected", loops: [] }
+    { keys: "enter", action: "doubleclick", kind: "selected", loops: ["RESULT"] }
   ]
 });
 
@@ -431,7 +439,7 @@ Sites.register({
   match: ["*://*.youtube.com/*"],
   loops: {},
   bindings: [
-    { keys: "x", action: "navigate", kind: "navigate", dir: "close" }
+    { keys: "x", action: "action", kind: "action", dir: "close" }
   ]
 });
 
@@ -452,7 +460,7 @@ Sites.register({
   bindings: [
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "ARTICLE" },
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "ARTICLE" },
-    { keys: "x", action: "navigate", kind: "navigate", dir: "close" }
+    { keys: "x", action: "action", kind: "action", dir: "close" }
   ]
 });
 
@@ -463,7 +471,7 @@ Sites.register({
   bindings: [
     { keys: "j", action: "scroll", kind: "scroll", dir: "down", amount: 50 },
     { keys: "k", action: "scroll", kind: "scroll", dir: "up", amount: 50 },
-    { keys: "r", action: "navigate", kind: "navigate", dir: "reload" },
+    { keys: "r", action: "action", kind: "action", dir: "reload" },
     { keys: "H", action: "navigate", kind: "navigate", dir: "prev" },
     { keys: "L", action: "navigate", kind: "navigate", dir: "next" }
   ]

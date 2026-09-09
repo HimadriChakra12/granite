@@ -12,5 +12,5 @@ define BRAVE {
     scroll(G, down, full)
     opennew(q, selected("RESULT"))
 
-    navigate(x, close)
+    action(x, close)
 }
