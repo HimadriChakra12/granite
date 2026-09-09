@@ -7,3 +7,8 @@ define YOUTUBESEARCH{
 
     click(enter, selected("SRCH"))
 }
+
+define YOUTUBE{
+    url("*://*.youtube.com/*")
+    navigate(x, close)
+}

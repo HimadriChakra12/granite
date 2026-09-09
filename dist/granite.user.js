@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    granite
-// @version      3.0.0
+// @version      4.0.0
 // @description  Persite Keybinding Program
 // @match        *://*/*
 // @grant        window.close
@@ -170,7 +170,7 @@ function gotoLoop(loopName, dir) {
 	var el = els[idx];
 	loopCursor[loopName] = el;
 
-	console.log("[site-vim] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
+	console.log("[granite] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
 		loopName, dir, els.length, idx, recycled ? " (previous target was recycled out of the DOM)" : "", el);
 	highlight(el);
 	return el;
@@ -233,13 +233,13 @@ function performBinding(b) {
 		doScroll(b.dir, b.amount);
 		return;
 	}
-	if (b.kind === "history") {
+	if (b.kind === "navigate") {
 		if (b.dir === "prev") history.back();
-		else history.forward();
-		return;
-	}
-	if (b.kind === "close") {
-		window.close();
+		else if (b.dir === "next") history.forward();
+		else if (b.dir === "reload") location.reload();
+		else if (b.dir === "close") {
+			window.close();
+		}
 		return;
 	}
 	if (b.kind === "selected") {
@@ -334,7 +334,7 @@ document.addEventListener("keydown", function (ev) {
 		ev.preventDefault();
 		var now = Date.now();
 		var tooSoon = candidate === lastFiredKeys && (now - lastFiredTime) < MIN_REPEAT_MS;
-		console.log("[site-vim] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
+		console.log("[granite] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
 			key, ev.key, candidate, ev.repeat,
 			tooSoon ? "THROTTLED (" + (now - lastFiredTime) + "ms since last fire)"
 			        : "fired: " + JSON.stringify(exact[0]));
@@ -348,13 +348,13 @@ document.addEventListener("keydown", function (ev) {
 	}
 
 	if (stillPossible) {
-		console.log("[site-vim] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
+		console.log("[granite] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
 		ev.preventDefault();
 		keyBuffer = candidate;
 		if (keyTimer) clearTimeout(keyTimer);
 		keyTimer = setTimeout(resetKeyBuffer, SEQUENCE_TIMEOUT_MS);
 	} else {
-		if (candidate.length) console.log("[site-vim] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
+		if (candidate.length) console.log("[granite] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
 		resetKeyBuffer();
 	}
 }, true);
@@ -373,14 +373,14 @@ Sites.register({
   match: ["*://search.brave.com/*"],
   loops: {"RESULT": ".title.search-snippet-title.line-clamp-1.svelte-14r20fy"},
   bindings: [
-    { keys: "x", action: "close", kind: "close" },
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
     { keys: "enter", action: "click", kind: "selected", loops: ["RESULT"] },
     { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
     { keys: "gg", action: "scroll", kind: "scroll", dir: "up", amount: Infinity },
     { keys: "G", action: "scroll", kind: "scroll", dir: "down", amount: Infinity },
-    { keys: "q", action: "opennew", kind: "selected", loops: ["RESULT"] }
+    { keys: "q", action: "opennew", kind: "selected", loops: ["RESULT"] },
+    { keys: "x", action: "navigate", kind: "navigate", dir: "close" }
   ]
 });
 
@@ -427,13 +427,11 @@ Sites.register({
 });
 
 Sites.register({
-  name: "YOUTUBESEARCH",
-  match: ["*://*.youtube.com/results?search_query=*"],
-  loops: {"SRCH": "ytd-video-renderer"},
+  name: "YOUTUBE",
+  match: ["*://*.youtube.com/*"],
+  loops: {},
   bindings: [
-    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "SRCH" },
-    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "SRCH" },
-    { keys: "enter", action: "click", kind: "selected", loops: ["SRCH"] }
+    { keys: "x", action: "navigate", kind: "navigate", dir: "close" }
   ]
 });
 
@@ -453,7 +451,8 @@ Sites.register({
   loops: {"ARTICLE": "article"},
   bindings: [
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "ARTICLE" },
-    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "ARTICLE" }
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "ARTICLE" },
+    { keys: "x", action: "navigate", kind: "navigate", dir: "close" }
   ]
 });
 
@@ -462,9 +461,11 @@ Sites.register({
   match: [],
   loops: {},
   bindings: [
-    { keys: "x", action: "close", kind: "close" },
     { keys: "j", action: "scroll", kind: "scroll", dir: "down", amount: 50 },
-    { keys: "k", action: "scroll", kind: "scroll", dir: "up", amount: 50 }
+    { keys: "k", action: "scroll", kind: "scroll", dir: "up", amount: 50 },
+    { keys: "r", action: "navigate", kind: "navigate", dir: "reload" },
+    { keys: "H", action: "navigate", kind: "navigate", dir: "prev" },
+    { keys: "L", action: "navigate", kind: "navigate", dir: "next" }
   ]
 });
 

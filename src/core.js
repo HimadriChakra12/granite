@@ -205,7 +205,7 @@ function gotoLoop(loopName, dir) {
 	var el = els[idx];
 	loopCursor[loopName] = el;
 
-	console.log("[site-vim] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
+	console.log("[granite] gotoLoop(%s, %s): %d matched elements, idx -> %d%s, target =",
 		loopName, dir, els.length, idx, recycled ? " (previous target was recycled out of the DOM)" : "", el);
 	highlight(el);
 	return el;
@@ -274,18 +274,19 @@ function performBinding(b) {
 		doScroll(b.dir, b.amount);
 		return;
 	}
-	if (b.kind === "history") {
+	if (b.kind === "navigate") {
 		if (b.dir === "prev") history.back();
-		else history.forward();
-		return;
-	}
-	if (b.kind === "close") {
-		// Privileged via the "window.close" grant declared in build.c
-		// (Tampermonkey/Violentmonkey back this with their own
-		// extension internals) -- unlike ordinary page-JS
-		// window.close(), this actually closes the tab regardless of
-		// how it was opened or its navigation history.
-		window.close();
+		else if (b.dir === "next") history.forward();
+		else if (b.dir === "reload") location.reload();
+		else if (b.dir === "close") {
+			// Privileged via the "window.close" grant declared in
+			// build.c (Tampermonkey/Violentmonkey back this with
+			// their own extension internals) -- unlike ordinary
+			// page-JS window.close(), this actually closes the tab
+			// regardless of how it was opened or its navigation
+			// history.
+			window.close();
+		}
 		return;
 	}
 	if (b.kind === "selected") {
@@ -402,7 +403,7 @@ document.addEventListener("keydown", function (ev) {
 		ev.preventDefault();
 		var now = Date.now();
 		var tooSoon = candidate === lastFiredKeys && (now - lastFiredTime) < MIN_REPEAT_MS;
-		console.log("[site-vim] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
+		console.log("[granite] key=%s (raw=%s) candidate=%s repeat=%s -> %s",
 			key, ev.key, candidate, ev.repeat,
 			tooSoon ? "THROTTLED (" + (now - lastFiredTime) + "ms since last fire)"
 			        : "fired: " + JSON.stringify(exact[0]));
@@ -416,13 +417,13 @@ document.addEventListener("keydown", function (ev) {
 	}
 
 	if (stillPossible) {
-		console.log("[site-vim] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
+		console.log("[granite] key=%s (raw=%s) candidate=%s -> buffering (waiting for more keys)", key, ev.key, candidate);
 		ev.preventDefault();
 		keyBuffer = candidate;
 		if (keyTimer) clearTimeout(keyTimer);
 		keyTimer = setTimeout(resetKeyBuffer, SEQUENCE_TIMEOUT_MS);
 	} else {
-		if (candidate.length) console.log("[site-vim] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
+		if (candidate.length) console.log("[granite] key=%s (raw=%s) candidate=%s -> no match, resetting", key, ev.key, candidate);
 		resetKeyBuffer();
 	}
 }, true);

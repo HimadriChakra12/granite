@@ -13,10 +13,6 @@ header can't safely replace them."
 #include <dirent.h>
 #include <sys/stat.h>
 
-/* =========================================================================
- * PART 1 -- syntax checking (unchanged in spirit: parse-only sanity net)
- * ========================================================================= */
-
 static void mujs_syntax_check(const char *code, const char *label) {
     const char *what = label ? label : "<bundle>";
 
@@ -65,45 +61,6 @@ static void mujs_check_bundle(const build_t *b) {
 
     printf("MUJS: bundle OK (%zu bytes)\n", b->out_len);
 }
-
-/* =========================================================================
- * PART 2 -- the site DSL compiler
- *
- * Site scripts (src/sites/<name>/script.js) are written in a small
- * sugar-on-top-of-JS DSL:
- *
- *   define KAGI {
- *       url("wildcard-scheme-and-host-pattern, e.g. star colon-slash-slash kagi.com slash star")
- *       loop("RESULT", ".search-result")
- *
- *       function ANIMATE(el) {
- *           el.classList.add("mu-pulse");
- *       }
- *
- *       focus(gi, ".search-input")
- *       click(gI, ANIMATE)
- *       focus(j, goto(next, "RESULT"))
- *       focus(k, goto(prev, "RESULT"))
- *   }
- *
- * (see the src/sites subfolders for real, working examples)
- *
- * The ONLY sugar is `define NAME{ ... }`, rewritten to
- * `define("NAME", function(){ ... });` before mujs ever sees it, plus
- * bare key/dir identifiers (`gi`, `next`, ...) as the first argument to
- * focus/click/longpress/doubleclick/goto, auto-quoted the same way.
- * `function NAME(args) { ... }` is plain, ordinary JavaScript.
- *
- * `focus`/`click`/`longpress`/`doubleclick` accept a selector string, a
- * function identifier (its ORIGINAL source is captured at the text level,
- * since mujs doesn't retain source for us, then tagged with a hidden
- * $muname property so the native callback can look it back up), or the
- * result of goto(dir, "LOOPNAME").
- *
- * Compiling every folder under src/sites/ dynamically discovers new
- * sites -- dropping in src/sites/newsite/script.js is enough, no build.c
- * edits required.
- * ========================================================================= */
 
 #ifndef MUJS_MAX_BINDINGS
 #define MUJS_MAX_BINDINGS 512
@@ -166,8 +123,6 @@ typedef struct {
     int func_count;
 } mujs_dsl_t;
 
-/* ---- preprocessing: define-sugar, function tagging, key auto-quoting -- */
-
 enum { MUJS_FRAME_PLAIN, MUJS_FRAME_DEFINE, MUJS_FRAME_FUNCTION };
 
 typedef struct { const char *name; int quote_args; } mujs_kwspec_t;
@@ -176,8 +131,7 @@ static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
     { "focus", 1 }, { "click", 1 }, { "longpress", 1 }, { "doubleclick", 1 }, { "opennew", 1 },
     { "goto", 1 }, { "gotourl", 1 },
     { "scroll", 3 }, /* key, up/down, and percentage-or-"full" -- all three are simple bare words when given as identifiers */
-    { "navigate", 2 }, /* key, prev/next */
-    { "close", 1 }, /* key only */
+    { "navigate", 2 }, /* key, prev/next/reload/close */
     { NULL, 0 }
 };
 
@@ -532,13 +486,14 @@ static void mujs_native_navigate(js_State *J) {
     if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
 
     const char *dir = js_tostring(J, 2);
-    if (strcmp(dir, "prev") != 0 && strcmp(dir, "next") != 0)
-        mujs__reject(J, "navigate() direction must be prev or next");
+    if (strcmp(dir, "prev") != 0 && strcmp(dir, "next") != 0 &&
+        strcmp(dir, "reload") != 0 && strcmp(dir, "close") != 0)
+        mujs__reject(J, "navigate() direction must be prev, next, reload, or close");
 
     mujs_binding_t *b = &s->bindings[s->binding_count++];
-    snprintf(b->action, sizeof(b->action), "history");
+    snprintf(b->action, sizeof(b->action), "navigate");
     snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
-    snprintf(b->kind, sizeof(b->kind), "history");
+    snprintf(b->kind, sizeof(b->kind), "navigate");
     snprintf(b->dir, sizeof(b->dir), "%s", dir);
     js_pushundefined(J);
 }
@@ -547,16 +502,6 @@ static void mujs_native_click(js_State *J)       { mujs__bind(J, "click"); }
 static void mujs_native_longpress(js_State *J)   { mujs__bind(J, "longpress"); }
 static void mujs_native_doubleclick(js_State *J) { mujs__bind(J, "doubleclick"); }
 static void mujs_native_opennew(js_State *J)     { mujs__bind(J, "opennew"); }
-
-static void mujs_native_close(js_State *J) {
-    mujs_site_t *s = &mujs__ctx(J)->site;
-    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
-    mujs_binding_t *b = &s->bindings[s->binding_count++];
-    snprintf(b->action, sizeof(b->action), "close");
-    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
-    snprintf(b->kind, sizeof(b->kind), "close");
-    js_pushundefined(J);
-}
 
 static void mujs_native_define(js_State *J) {
     mujs_site_t *s = &mujs__ctx(J)->site;
@@ -579,7 +524,6 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_gotourl, "gotourl", 2);       js_setglobal(J, "gotourl");
     js_newcfunction(J, mujs_native_scroll, "scroll", 3);         js_setglobal(J, "scroll");
     js_newcfunction(J, mujs_native_navigate, "navigate", 2);     js_setglobal(J, "navigate");
-    js_newcfunction(J, mujs_native_close, "close", 1);           js_setglobal(J, "close");
     js_newcfunction(J, mujs_native_focus, "focus", 2);           js_setglobal(J, "focus");
     js_newcfunction(J, mujs_native_click, "click", 2);           js_setglobal(J, "click");
     js_newcfunction(J, mujs_native_longpress, "longpress", 2);   js_setglobal(J, "longpress");
@@ -648,7 +592,7 @@ static char *mujs__emit_site(const mujs_site_t *s) {
             n += snprintf(out + n, cap - n, ", dir: ");
             mujs__json_escape(out, cap, &n, b->dir);
             n += snprintf(out + n, cap - n, ", amount: %s", b->value); /* a real number, not a string */
-        } else if (strcmp(b->kind, "history") == 0) {
+        } else if (strcmp(b->kind, "navigate") == 0) {
             n += snprintf(out + n, cap - n, ", dir: ");
             mujs__json_escape(out, cap, &n, b->dir);
         } else if (strcmp(b->kind, "function") == 0) {
@@ -671,15 +615,6 @@ static char *mujs__emit_site(const mujs_site_t *s) {
     n += snprintf(out + n, cap - n, "  ]\n});\n\n");
     return out;
 }
-
-/* ---- public entry points -------------------------------------------------
- *
- * mujs_compile_site(b, path)     -- compile one site script into b directly
- * mujs_compile_sites_dir(b, dir) -- dynamically discover every
- *                                    <dir>/<name>/script.js and compile
- *                                    them all, in directory order. Drop a
- *                                    new folder in -- no build.c edits.
- */
 
 static void mujs_compile_site(build_t *b, const char *path) {
     long len;
@@ -743,7 +678,7 @@ static void mujs_compile_sites_dir(build_t *b, const char *sites_dir) {
         }
         fclose(f);
 
-        printf("MUJS: %s\n", script);
+        printf("MUJS: compiling %s\n", script);
         mujs_compile_site(b, script);
     }
     closedir(d);
