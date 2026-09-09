@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      5.0.0
+// @version      6.0.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
@@ -245,6 +245,9 @@ function performBinding(b) {
 		}
 		return;
 	}
+	if (b.kind === "off") {
+		return;
+	}
 	if (b.kind === "selected") {
 		var act = ACTIONS[b.action];
 		if (act) resolveSelected(b.loops).forEach(act);
@@ -450,17 +453,6 @@ Sites.register({
   bindings: [
     { keys: "gi", action: "focus", kind: "selector", value: "div[role='textbox'][aria-placeholder='Message...']" },
     { keys: "gI", action: "focus", kind: "selector", value: "input[name='searchInput']" }
-  ]
-});
-
-Sites.register({
-  name: "REDDIT",
-  match: ["https://www.reddit.com/"],
-  loops: {"ARTICLE": "article"},
-  bindings: [
-    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "ARTICLE" },
-    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "ARTICLE" },
-    { keys: "x", action: "action", kind: "action", dir: "close" }
   ]
 });
 

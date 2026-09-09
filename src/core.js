@@ -292,6 +292,13 @@ function performBinding(b) {
 		}
 		return;
 	}
+	if (b.kind === "off") {
+		// Deliberately does nothing. Its whole purpose is just to
+		// exist and claim this key at the specific-site layer, so
+		// effectiveBindings()'s merge never lets a universal site (or
+		// the built-in gi/gI defaults) fill it back in underneath.
+		return;
+	}
 	if (b.kind === "selected") {
 		// Applies the action to MULTIPLE elements at once -- every
 		// named loop's current cursor item (or every loop's, if none
