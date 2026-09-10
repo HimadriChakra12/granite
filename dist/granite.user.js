@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      6.0.0
+// @version      7.0.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
@@ -68,6 +68,16 @@ function universalSites() {
 	return Sites.list.filter(isUniversal);
 }
 
+function dedupeLastWins(bindings) {
+	var byKey = {};
+	var order = [];
+	bindings.forEach(function (b) {
+		if (!byKey.hasOwnProperty(b.keys)) order.push(b.keys);
+		byKey[b.keys] = b; // last one written wins
+	});
+	return order.map(function (k) { return byKey[k]; });
+}
+
 function effectiveBindings() {
 	var seen = {};
 	var result = [];
@@ -78,8 +88,8 @@ function effectiveBindings() {
 	}
 
 	var specific = activeSite();
-	if (specific) addAll(specific.bindings);
-	universalSites().forEach(function (site) { addAll(site.bindings); });
+	if (specific) addAll(dedupeLastWins(specific.bindings));
+	universalSites().forEach(function (site) { addAll(dedupeLastWins(site.bindings)); });
 	addAll(DEFAULT_BINDINGS);
 
 	return result;

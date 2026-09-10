@@ -69,6 +69,20 @@ function universalSites() {
 // then every universal site's bindings (as a fallback layer any site
 // can share), then the built-in gi/gI defaults. A key already claimed
 // by an earlier layer is never overridden by a later one.
+// Within ONE site's own bindings list, a later entry for the same key
+// overrides an earlier one -- e.g. off(action(r)) written after
+// action(r, reload) correctly cancels it, rather than the two just
+// coexisting with the first (real) one winning by accident.
+function dedupeLastWins(bindings) {
+	var byKey = {};
+	var order = [];
+	bindings.forEach(function (b) {
+		if (!byKey.hasOwnProperty(b.keys)) order.push(b.keys);
+		byKey[b.keys] = b; // last one written wins
+	});
+	return order.map(function (k) { return byKey[k]; });
+}
+
 function effectiveBindings() {
 	var seen = {};
 	var result = [];
@@ -79,8 +93,8 @@ function effectiveBindings() {
 	}
 
 	var specific = activeSite();
-	if (specific) addAll(specific.bindings);
-	universalSites().forEach(function (site) { addAll(site.bindings); });
+	if (specific) addAll(dedupeLastWins(specific.bindings));
+	universalSites().forEach(function (site) { addAll(dedupeLastWins(site.bindings)); });
 	addAll(DEFAULT_BINDINGS);
 
 	return result;
