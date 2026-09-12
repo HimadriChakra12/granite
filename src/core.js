@@ -127,6 +127,39 @@ function resolveSelected(loopNames) {
 		.filter(function (el) { return el && el.isConnected; });
 }
 
+// Resolves yankurl()'s optional target into an actual URL string.
+// No target at all -> the current page's URL. A resolved element with
+// no direct link -> its closest/nested <a href>, if any. Falls back to
+// the current page's URL if nothing usable is found, rather than
+// copying nothing.
+function resolveYankTarget(b) {
+	if (!b.hasTarget) return null;
+	if (b.targetKind === "selector") return document.querySelector(b.targetValue);
+	if (b.targetKind === "goto") return gotoLoop(b.targetLoop, b.targetDir);
+	if (b.targetKind === "selected") {
+		var els = resolveSelected(b.targetSelLoops);
+		return els.length ? els[0] : null;
+	}
+	if (b.targetKind === "function") return b.targetValue(document.activeElement, MU);
+	return null;
+}
+
+function resolveYankUrl(b) {
+	var target = resolveYankTarget(b);
+	if (!target) return location.href;
+	if (typeof target === "string") return target; // a custom function returned a URL directly
+	if (target.tagName === "A" && target.href) return target.href;
+	if (target.closest) {
+		var ancestorLink = target.closest("a[href]");
+		if (ancestorLink) return ancestorLink.href;
+	}
+	if (target.querySelector) {
+		var innerLink = target.querySelector("a[href]");
+		if (innerLink) return innerLink.href;
+	}
+	return location.href;
+}
+
 // ---- self-owned smooth scrolling ------------------------------------------
 //
 // Deliberately NOT using the browser's native `behavior: "smooth"`. Native
@@ -306,6 +339,26 @@ function performBinding(b) {
 		}
 		return;
 	}
+	if (b.kind === "root") {
+		location.href = location.origin;
+		return;
+	}
+	if (b.kind === "branch") {
+		var path = location.pathname;
+		if (path.length > 1 && path.charAt(path.length - 1) === "/") path = path.slice(0, -1);
+		var upIdx = path.lastIndexOf("/");
+		location.href = location.origin + (upIdx > 0 ? path.slice(0, upIdx) : "/");
+		return;
+	}
+	if (b.kind === "yankurl") {
+		// Privileged via the "GM_setClipboard" grant declared in
+		// build.c -- sidesteps the focus/permission flakiness the
+		// plain navigator.clipboard API can hit.
+		var yankedUrl = resolveYankUrl(b);
+		GM_setClipboard(yankedUrl);
+		showYankPopup(yankedUrl);
+		return;
+	}
 	if (b.kind === "off") {
 		// Deliberately does nothing. Its whole purpose is just to
 		// exist and claim this key at the specific-site layer, so
@@ -464,11 +517,51 @@ document.addEventListener("keydown", function (ev) {
 	}
 }, true);
 
-// ---- kagi-style cursor highlight, injected once -------------------------
+// ---- kagi-style cursor highlight + yank popup, injected once ------------
 
 (function injectStyle() {
 	var style = document.createElement("style");
 	style.textContent =
-		".mu-cursor { outline: 2px solid #4f9dff !important; outline-offset: 2px !important; }";
+		".mu-cursor { outline: 2px solid #4f9dff !important; outline-offset: 2px !important; }" +
+		".mu-yank-popup {" +
+		"  position: fixed; bottom: 24px; right: 24px; z-index: 2147483647;" +
+		"  background: #1e1e1e; color: #eee; font-family: monospace; font-size: 13px;" +
+		"  padding: 8px 12px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);" +
+		"  opacity: 1; transition: opacity 0.2s ease-out; pointer-events: none;" +
+		"  max-width: 60vw; overflow-wrap: break-word;" +
+		"}" +
+		".mu-yank-popup .mu-yank-label { color: #4f9dff; font-weight: bold; }" +
+		".mu-yank-popup.mu-yank-popup-hide { opacity: 0; }";
 	(document.head || document.documentElement).appendChild(style);
 })();
+
+// Small toast confirming a yank, e.g.:
+//   yanked
+//   :https://example.com/page
+// Built with textContent (not innerHTML) since the URL is arbitrary
+// page content, not something to trust as markup.
+var yankPopupTimer = null;
+function showYankPopup(url) {
+	var existing = document.querySelector(".mu-yank-popup");
+	if (existing) existing.remove();
+	if (yankPopupTimer) clearTimeout(yankPopupTimer);
+
+	var el = document.createElement("div");
+	el.className = "mu-yank-popup";
+
+	var label = document.createElement("div");
+	label.className = "mu-yank-label";
+	label.textContent = "yanked";
+
+	var urlLine = document.createElement("div");
+	urlLine.textContent = ":" + url;
+
+	el.appendChild(label);
+	el.appendChild(urlLine);
+	document.body.appendChild(el);
+
+	yankPopupTimer = setTimeout(function () {
+		el.classList.add("mu-yank-popup-hide");
+		setTimeout(function () { el.remove(); }, 200);
+	}, 1200);
+}

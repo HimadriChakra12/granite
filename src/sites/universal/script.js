@@ -5,4 +5,7 @@ define UNIVERSAL {
     action(r, reload)
     navigate(H, prev)
     navigate(L, next)
+    scroll(gg, up, full)
+    scroll(G, down, full)
+    action(yy, yankurl())
 }

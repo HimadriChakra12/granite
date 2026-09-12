@@ -7,10 +7,8 @@ define BRAVE {
     click(enter, selected("RESULT"))
 
     focus(gi, "input#searchbox")
-
-    scroll(gg, up, full)
-    scroll(G, down, full)
-    opennew(q, selected("RESULT"))
+    opennew(space, selected("RESULT"))
 
     action(x, close)
+    action(yu, yankurl(selected("RESULT")))
 }

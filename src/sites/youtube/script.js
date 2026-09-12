@@ -9,6 +9,20 @@ define YOUTUBESEARCH{
 }
 
 define YOUTUBE{
-    url("*://*.youtube.com/*")
-    action(x, close)
+    url("*://*.youtube.com/")
+
+    loop("CONTENT", "[id='content']")
+    focus(j, goto(next, "CONTENT"))
+    focus(k, goto(prev, "CONTENT"))
+    click(enter, selected("CONTENT"))
 }
+
+define YOUTUBEWATCH{
+    url("*://*.youtube.com/watch?v=*")
+
+    loop("SUGG", ".ytLockupViewModelContentImage")
+    focus(j, goto(next, "SUGG"))
+    focus(k, goto(prev, "SUGG"))
+    click(enter, selected("CONTENT"))
+}
+

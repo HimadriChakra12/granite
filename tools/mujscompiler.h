@@ -137,6 +137,8 @@ typedef struct {
     char loopname[64];          /* only used when kind == goto */
     char sel_loops[MUJS_MAX_SEL_LOOPS][64]; /* only used when kind == selected; empty = every loop */
     int  sel_loop_count;
+    int  has_target;            /* only used when kind == yankurl */
+    char target_kind[16];       /* only used when kind == yankurl: selector|function|goto|selected */
 } mujs_binding_t;
 
 typedef struct {
@@ -170,6 +172,163 @@ typedef struct {
 
 /* ---- preprocessing: define-sugar, function tagging, key auto-quoting -- */
 
+/* ---- user-defined aliases (src/alias.js) --------------------------------
+ *
+ * A plain text config, NOT run through mujs -- just lines like:
+ *
+ *   alias branch = br
+ *   alias branch = prebr
+ *   alias yankurl = yu
+ *   alias off = 0
+ *
+ * meaning "REALNAME, also callable as ALIASNAME". Numeric alias names
+ * (like `0`) are supported -- `0(x)` isn't valid JS syntax at all, so
+ * this is a raw text substitution pass applied to every site script
+ * BEFORE mujs__preprocess ever sees it, same spirit as the define{}
+ * sugar. Optional: if src/alias.js doesn't exist, this is just a no-op.
+ */
+#ifndef MUJS_MAX_ALIASES
+#define MUJS_MAX_ALIASES 64
+#endif
+
+typedef struct {
+    char real[64];
+    char alias[64];
+} mujs_alias_entry_t;
+
+static mujs_alias_entry_t mujs_g_aliases[MUJS_MAX_ALIASES];
+static int mujs_g_alias_count = 0;
+
+static void mujs_load_aliases(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return; /* optional file -- no aliases configured is fine */
+
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (isspace((unsigned char)*p)) p++;
+        if (strncmp(p, "alias", 5) != 0 || isalnum((unsigned char)p[5]) || p[5] == '_') continue;
+        p += 5;
+        while (isspace((unsigned char)*p)) p++;
+
+        char *real_start = p;
+        while (*p && !isspace((unsigned char)*p) && *p != '=') p++;
+        size_t real_len = (size_t)(p - real_start);
+
+        while (isspace((unsigned char)*p)) p++;
+        if (*p != '=') continue;
+        p++;
+        while (isspace((unsigned char)*p)) p++;
+
+        char *alias_start = p;
+        while (*p && !isspace((unsigned char)*p) && *p != '\n' && *p != '\r') p++;
+        size_t alias_len = (size_t)(p - alias_start);
+
+        if (real_len == 0 || alias_len == 0 || real_len >= 64 || alias_len >= 64) continue;
+        if (mujs_g_alias_count >= MUJS_MAX_ALIASES) {
+            fprintf(stderr, "mujscompiler: too many aliases in %s (raise MUJS_MAX_ALIASES)\n", path);
+            break;
+        }
+
+        mujs_alias_entry_t *e = &mujs_g_aliases[mujs_g_alias_count++];
+        memcpy(e->real, real_start, real_len); e->real[real_len] = '\0';
+        memcpy(e->alias, alias_start, alias_len); e->alias[alias_len] = '\0';
+    }
+    fclose(f);
+
+    if (mujs_g_alias_count > 0) {
+        printf("mujscompiler: loaded %d alias(es) from %s\n", mujs_g_alias_count, path);
+    }
+}
+
+/* Rewrites every `ALIASNAME(` call in `src` to `REALNAME(`. Word-
+ * boundary checked on both sides using isalnum()/underscore, which
+ * naturally also does the right thing for numeric aliases -- `0` won't
+ * match inside `10(` because '1' right before it is alnum too. Only
+ * touches things immediately followed (ignoring whitespace) by '(', so
+ * a real numeric literal used as a number elsewhere is never touched.
+ * Strings/comments pass through untouched. */
+static char *mujs__apply_aliases(const char *src) {
+    size_t srclen = strlen(src);
+    if (mujs_g_alias_count == 0) {
+        char *copy = malloc(srclen + 1);
+        if (!copy) { perror("malloc"); exit(1); }
+        memcpy(copy, src, srclen + 1);
+        return copy;
+    }
+
+    char *out = malloc(srclen + (size_t)mujs_g_alias_count * 64 + 4096);
+    if (!out) { perror("malloc"); exit(1); }
+    size_t o = 0;
+    size_t i = 0;
+
+    while (i < srclen) {
+        char c = src[i];
+
+        if (c == '"' || c == '\'') {
+            char quote = c;
+            out[o++] = src[i++];
+            while (i < srclen && src[i] != quote) {
+                if (src[i] == '\\' && i + 1 < srclen) out[o++] = src[i++];
+                out[o++] = src[i++];
+            }
+            if (i < srclen) out[o++] = src[i++];
+            continue;
+        }
+        if (c == '/' && i + 1 < srclen && src[i + 1] == '/') {
+            while (i < srclen && src[i] != '\n') out[o++] = src[i++];
+            continue;
+        }
+        if (c == '/' && i + 1 < srclen && src[i + 1] == '*') {
+            out[o++] = src[i++]; out[o++] = src[i++];
+            while (i + 1 < srclen && !(src[i] == '*' && src[i + 1] == '/')) out[o++] = src[i++];
+            if (i + 1 < srclen) { out[o++] = src[i++]; out[o++] = src[i++]; }
+            continue;
+        }
+
+        int matched = -1;
+        for (int a = 0; a < mujs_g_alias_count; a++) {
+            size_t alen = strlen(mujs_g_aliases[a].alias);
+            int before_ok = (i == 0) || !(isalnum((unsigned char)src[i - 1]) || src[i - 1] == '_');
+            if (before_ok && strncmp(src + i, mujs_g_aliases[a].alias, alen) == 0) {
+                size_t after = i + alen;
+                int after_ok = !(isalnum((unsigned char)src[after]) || src[after] == '_');
+                if (after_ok) {
+                    size_t k = after;
+                    while (k < srclen && isspace((unsigned char)src[k])) k++;
+                    if (k < srclen && src[k] == '(') { matched = a; break; }
+                }
+            }
+        }
+
+        if (matched >= 0) {
+            size_t rlen = strlen(mujs_g_aliases[matched].real);
+            memcpy(out + o, mujs_g_aliases[matched].real, rlen);
+            o += rlen;
+            i += strlen(mujs_g_aliases[matched].alias);
+            continue;
+        }
+
+        out[o++] = src[i++];
+    }
+    out[o] = '\0';
+    return out;
+}
+
+/* ---- variable()/ignore()/exclude()/include() ----------------------------
+ *
+ * Pure compile-time string helpers -- like loop(), but NOT usable with
+ * goto() (there's deliberately no C-side registry for these; they never
+ * reach Sites.register(...) at all). Simple enough to just be real JS,
+ * executed once per compiled file before the site script itself runs.
+ */
+static const char *MUJS_PRELUDE =
+    "var __muVars = {};\n"
+    "function variable(name, selector) { __muVars[name] = selector; return selector; }\n"
+    "function ignore(name, extra) { return __muVars[name] + ':not(' + extra + ')'; }\n"
+    "function exclude(name, extra) { return __muVars[name] + ':not(:has(' + extra + '))'; }\n"
+    "function include(name, extra) { return __muVars[name] + ':has(' + extra + ')'; }\n";
+
 enum { MUJS_FRAME_PLAIN, MUJS_FRAME_DEFINE, MUJS_FRAME_FUNCTION };
 
 typedef struct { const char *name; int quote_args; } mujs_kwspec_t;
@@ -185,6 +344,10 @@ static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
     { "scroll", 3 }, /* key, up/down, and percentage-or-"full" -- all three are simple bare words when given as identifiers */
     { "navigate", 2 }, /* key, prev/next */
     { "action", 2 }, /* key, close/reload */
+    { "root", 1 }, /* key only */
+    { "branch", 1 }, /* key only */
+    { "off", 1 }, /* off(key) bare-key form; off(click(key)) is unaffected -- "click" isn't
+                   * followed by ',' or ')' there, so it's correctly left unquoted */
     { NULL, 0 }
 };
 
@@ -192,23 +355,33 @@ static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
  * whitespace) by ',' or ')', wrap it in quotes in `out` and advance *pi
  * past it. Otherwise leaves *pi untouched -- the caller's normal
  * character-by-character loop handles whatever's actually there. */
+/* If *pi points at a bare identifier immediately followed (after
+ * whitespace) by ',' or ')', wraps it in quotes and advances *pi past
+ * it. Otherwise leaves *pi and *po COMPLETELY untouched -- e.g. the
+ * `action` in `off(action(r))` is a nested call, not a bare word, and
+ * must be left for the main scanner loop to rediscover as its OWN
+ * keyword occurrence (so `r` still gets auto-quoted). Consuming it
+ * here even just to copy it through verbatim would skip past it and
+ * prevent that rediscovery -- this was a real regression once. */
 static void mujs__maybe_quote_bare_arg(const char *src, size_t srclen, size_t *pi, char *out, size_t *po) {
-    size_t i = *pi, o = *po;
+    size_t i = *pi;
     if (i < srclen && (isalpha((unsigned char)src[i]) || src[i] == '_')) {
         size_t ts = i;
-        while (i < srclen && (isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
-        size_t te = i;
-        size_t p2 = i;
+        size_t scan = i;
+        while (scan < srclen && (isalnum((unsigned char)src[scan]) || src[scan] == '_')) scan++;
+        size_t te = scan;
+        size_t p2 = scan;
         while (p2 < srclen && isspace((unsigned char)src[p2])) p2++;
         if (p2 < srclen && (src[p2] == ',' || src[p2] == ')')) {
+            size_t o = *po;
             out[o++] = '"';
             memcpy(out + o, src + ts, te - ts); o += (te - ts);
             out[o++] = '"';
-        } else {
-            memcpy(out + o, src + ts, te - ts); o += (te - ts);
+            *po = o;
+            *pi = te;
         }
+        /* else: nested call, not a bare word -- leave *pi and *po alone */
     }
-    *pi = i; *po = o;
 }
 
 static char *mujs__preprocess(const char *src, mujs_dsl_t *dsl) {
@@ -517,26 +690,21 @@ static const char *mujs__lookup_func_source(mujs_dsl_t *dsl, const char *name) {
     return NULL;
 }
 
-static void mujs__bind(js_State *J, const char *action) {
-    if (mujs__maybe_unbind_marker(J)) return;
-
-    mujs_dsl_t *dsl = mujs__ctx(J);
-    mujs_site_t *s = &dsl->site;
-
-    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
-    mujs_binding_t *b = &s->bindings[s->binding_count++];
-    snprintf(b->action, sizeof(b->action), "%s", action);
-    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
-
-    if (js_isstring(J, 2)) {
+/* Resolves a target VALUE sitting at stack index `idx` -- a selector
+ * string, a captured function, a goto(...) marker, or a selected(...)
+ * marker -- into b's kind/value/dir/loopname/sel_loops fields. Shared
+ * by mujs__bind (focus/click/etc's 2nd argument) and yankurl()'s
+ * optional argument, so both accept exactly the same target types. */
+static void mujs__resolve_target(js_State *J, int idx, mujs_dsl_t *dsl, mujs_binding_t *b) {
+    if (js_isstring(J, idx)) {
         snprintf(b->kind, sizeof(b->kind), "selector");
-        snprintf(b->value, sizeof(b->value), "%s", js_tostring(J, 2));
+        snprintf(b->value, sizeof(b->value), "%s", js_tostring(J, idx));
 
-    } else if (js_iscallable(J, 2)) {
-        js_getproperty(J, 2, "$muname");
+    } else if (js_iscallable(J, idx)) {
+        js_getproperty(J, idx, "$muname");
         if (!js_isstring(J, -1)) {
             js_pop(J, 1);
-            mujs__reject(J, "function passed to focus()/click()/etc must be a named "
+            mujs__reject(J, "function passed here must be a named "
                             "top-level `function NAME(...) {...}` declaration");
         }
         char fname[64];
@@ -548,8 +716,8 @@ static void mujs__bind(js_State *J, const char *action) {
         snprintf(b->kind, sizeof(b->kind), "function");
         snprintf(b->value, sizeof(b->value), "%s", source);
 
-    } else if (js_isobject(J, 2)) {
-        js_getproperty(J, 2, "$type");
+    } else if (js_isobject(J, idx)) {
+        js_getproperty(J, idx, "$type");
         const char *type = js_isstring(J, -1) ? js_tostring(J, -1) : "";
         int is_goto = strcmp(type, "__mugoto__") == 0;
         int is_selected = strcmp(type, "__muselected__") == 0;
@@ -557,7 +725,7 @@ static void mujs__bind(js_State *J, const char *action) {
 
         if (is_selected) {
             snprintf(b->kind, sizeof(b->kind), "selected");
-            js_getproperty(J, 2, "loops");
+            js_getproperty(J, idx, "loops");
             int n = js_getlength(J, -1);
             if (n > MUJS_MAX_SEL_LOOPS) mujs__reject(J, "too many loop names passed to selected() (raise MUJS_MAX_SEL_LOOPS)");
             for (int i = 0; i < n; i++) {
@@ -569,18 +737,32 @@ static void mujs__bind(js_State *J, const char *action) {
             js_pop(J, 1); /* the loops array */
         } else if (is_goto) {
             snprintf(b->kind, sizeof(b->kind), "goto");
-            js_getproperty(J, 2, "dir");
+            js_getproperty(J, idx, "dir");
             snprintf(b->dir, sizeof(b->dir), "%s", js_tostring(J, -1));
             js_pop(J, 1);
-            js_getproperty(J, 2, "loop");
+            js_getproperty(J, idx, "loop");
             snprintf(b->loopname, sizeof(b->loopname), "%s", js_tostring(J, -1));
             js_pop(J, 1);
         } else {
-            mujs__reject(J, "focus()/click()/etc expects a selector, a function, goto(...), or selected");
+            mujs__reject(J, "expected a selector, a function, goto(...), or selected(...)");
         }
     } else {
-        mujs__reject(J, "focus()/click()/etc expects a selector, a function, goto(...), or selected");
+        mujs__reject(J, "expected a selector, a function, goto(...), or selected(...)");
     }
+}
+
+static void mujs__bind(js_State *J, const char *action) {
+    if (mujs__maybe_unbind_marker(J)) return;
+
+    mujs_dsl_t *dsl = mujs__ctx(J);
+    mujs_site_t *s = &dsl->site;
+
+    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+    mujs_binding_t *b = &s->bindings[s->binding_count++];
+    snprintf(b->action, sizeof(b->action), "%s", action);
+    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+
+    mujs__resolve_target(J, 2, dsl, b);
     js_pushundefined(J);
 }
 
@@ -606,22 +788,123 @@ static void mujs_native_navigate(js_State *J) {
 /* action(key, close/reload) -- browser-level tab actions, distinct from
  * navigate()'s history stepping. close is privileged via the
  * "window.close" grant in build.c. */
+/* yankurl() / yankurl(target) -- a VALUE, like goto()/selected(), used
+ * as action()'s second argument. Copies the current page's URL if
+ * called bare, or resolves `target` (same target types as focus/click:
+ * selector, function, goto(...), selected(...)) and copies THAT
+ * element's link href instead. Performs no action itself -- action()
+ * interprets the marker. */
+static void mujs_native_yankurl(js_State *J) {
+    mujs_dsl_t *dsl = mujs__ctx(J);
+    mujs_binding_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+
+    int has_target = !js_isundefined(J, 1);
+    if (has_target) mujs__resolve_target(J, 1, dsl, &tmp);
+
+    js_newobject(J);
+    js_pushliteral(J, "__muyankurl__");
+    js_setproperty(J, -2, "$type");
+    js_pushboolean(J, has_target);
+    js_setproperty(J, -2, "hasTarget");
+    if (has_target) {
+        js_pushstring(J, tmp.kind);     js_setproperty(J, -2, "targetKind");
+        js_pushstring(J, tmp.value);    js_setproperty(J, -2, "targetValue");
+        js_pushstring(J, tmp.dir);      js_setproperty(J, -2, "targetDir");
+        js_pushstring(J, tmp.loopname); js_setproperty(J, -2, "targetLoop");
+        js_newarray(J);
+        for (int i = 0; i < tmp.sel_loop_count; i++) {
+            js_pushstring(J, tmp.sel_loops[i]);
+            js_setindex(J, -2, i);
+        }
+        js_setproperty(J, -2, "targetSelLoops");
+    }
+}
+
+/* action(key, close/reload/yankurl(...)) -- browser-level tab actions.
+ * close is privileged via the "window.close" grant, yankurl's copy is
+ * privileged via the "GM_setClipboard" grant, both declared in build.c. */
 static void mujs_native_action(js_State *J) {
     if (mujs__maybe_unbind_marker(J)) return;
     mujs_site_t *s = &mujs__ctx(J)->site;
     if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
 
-    const char *dir = js_tostring(J, 2);
-    if (strcmp(dir, "close") != 0 && strcmp(dir, "reload") != 0)
-        mujs__reject(J, "action() must be close or reload");
-
     mujs_binding_t *b = &s->bindings[s->binding_count++];
-    snprintf(b->action, sizeof(b->action), "action");
     snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
-    snprintf(b->kind, sizeof(b->kind), "action");
-    snprintf(b->dir, sizeof(b->dir), "%s", dir);
+    snprintf(b->action, sizeof(b->action), "action");
+
+    if (js_isstring(J, 2)) {
+        const char *dir = js_tostring(J, 2);
+        if (strcmp(dir, "close") != 0 && strcmp(dir, "reload") != 0)
+            mujs__reject(J, "action() must be close, reload, or yankurl(...)");
+        snprintf(b->kind, sizeof(b->kind), "action");
+        snprintf(b->dir, sizeof(b->dir), "%s", dir);
+
+    } else if (js_isobject(J, 2)) {
+        js_getproperty(J, 2, "$type");
+        int is_yank = js_isstring(J, -1) && strcmp(js_tostring(J, -1), "__muyankurl__") == 0;
+        js_pop(J, 1);
+        if (!is_yank) mujs__reject(J, "action() must be close, reload, or yankurl(...)");
+
+        snprintf(b->kind, sizeof(b->kind), "yankurl");
+
+        js_getproperty(J, 2, "hasTarget");
+        b->has_target = js_toboolean(J, -1);
+        js_pop(J, 1);
+
+        if (b->has_target) {
+            js_getproperty(J, 2, "targetKind");
+            snprintf(b->target_kind, sizeof(b->target_kind), "%s", js_tostring(J, -1));
+            js_pop(J, 1);
+            js_getproperty(J, 2, "targetValue");
+            snprintf(b->value, sizeof(b->value), "%s", js_tostring(J, -1));
+            js_pop(J, 1);
+            js_getproperty(J, 2, "targetDir");
+            snprintf(b->dir, sizeof(b->dir), "%s", js_tostring(J, -1));
+            js_pop(J, 1);
+            js_getproperty(J, 2, "targetLoop");
+            snprintf(b->loopname, sizeof(b->loopname), "%s", js_tostring(J, -1));
+            js_pop(J, 1);
+            js_getproperty(J, 2, "targetSelLoops");
+            int n = js_getlength(J, -1);
+            for (int i = 0; i < n && i < MUJS_MAX_SEL_LOOPS; i++) {
+                js_getindex(J, -1, i);
+                snprintf(b->sel_loops[i], sizeof(b->sel_loops[i]), "%s", js_tostring(J, -1));
+                js_pop(J, 1);
+            }
+            b->sel_loop_count = n;
+            js_pop(J, 1); /* targetSelLoops array */
+        }
+    } else {
+        mujs__reject(J, "action() must be close, reload, or yankurl(...)");
+    }
     js_pushundefined(J);
 }
+
+/* root(key) -- jumps to the current site's origin root, e.g.
+ * https://example.com/a/b/c -> https://example.com/ */
+static void mujs_native_root(js_State *J) {
+    mujs_site_t *s = &mujs__ctx(J)->site;
+    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+    mujs_binding_t *b = &s->bindings[s->binding_count++];
+    snprintf(b->action, sizeof(b->action), "root");
+    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+    snprintf(b->kind, sizeof(b->kind), "root");
+    js_pushundefined(J);
+}
+
+/* branch(key) -- goes up one path segment, e.g.
+ * https://example.com/a/b/c -> https://example.com/a/b */
+static void mujs_native_branch(js_State *J) {
+    mujs_site_t *s = &mujs__ctx(J)->site;
+    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+    mujs_binding_t *b = &s->bindings[s->binding_count++];
+    snprintf(b->action, sizeof(b->action), "branch");
+    snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+    snprintf(b->kind, sizeof(b->kind), "branch");
+    js_pushundefined(J);
+}
+
 static void mujs_native_focus(js_State *J)       { mujs__bind(J, "focus"); }
 static void mujs_native_click(js_State *J)       { mujs__bind(J, "click"); }
 static void mujs_native_longpress(js_State *J)   { mujs__bind(J, "longpress"); }
@@ -632,24 +915,33 @@ static void mujs_native_opennew(js_State *J)     { mujs__bind(J, "opennew"); }
  * universal site (or the built-in gi/gI defaults) would otherwise fill
  * it in. Takes the marker produced by calling focus/click/longpress/
  * doubleclick/opennew with just a key and no target. */
+/* off(click(key)) -- OR off("key") directly, for single-argument
+ * declarators like root()/branch() that have no "no target given"
+ * signal to detect in the first place. Either form ends up identical:
+ * an explicit "unbind" entry for that key on this site. */
 static void mujs_native_off(js_State *J) {
     mujs_site_t *s = &mujs__ctx(J)->site;
+    const char *keys;
 
-    if (!js_isobject(J, 1)) mujs__reject(J, "off() expects e.g. click(key) with no target");
-    js_getproperty(J, 1, "$type");
-    int ok = js_isstring(J, -1) && strcmp(js_tostring(J, -1), "__muunbind__") == 0;
-    js_pop(J, 1);
-    if (!ok) mujs__reject(J, "off() expects e.g. click(key) with no target");
-
-    js_getproperty(J, 1, "keys");
-    const char *keys = js_tostring(J, -1);
+    if (js_isstring(J, 1)) {
+        keys = js_tostring(J, 1);
+    } else if (js_isobject(J, 1)) {
+        js_getproperty(J, 1, "$type");
+        int ok = js_isstring(J, -1) && strcmp(js_tostring(J, -1), "__muunbind__") == 0;
+        js_pop(J, 1);
+        if (!ok) mujs__reject(J, "off() expects e.g. click(key) with no target, or a plain key string");
+        js_getproperty(J, 1, "keys");
+        keys = js_tostring(J, -1);
+    } else {
+        mujs__reject(J, "off() expects e.g. click(key) with no target, or a plain key string");
+        return; /* unreachable -- mujs__reject longjmps out */
+    }
 
     if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
     mujs_binding_t *b = &s->bindings[s->binding_count++];
     snprintf(b->action, sizeof(b->action), "off");
     snprintf(b->keys, sizeof(b->keys), "%s", keys);
     snprintf(b->kind, sizeof(b->kind), "off");
-    js_pop(J, 1); /* the keys string */
     js_pushundefined(J);
 }
 
@@ -681,6 +973,9 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_doubleclick, "doubleclick", 2); js_setglobal(J, "doubleclick");
     js_newcfunction(J, mujs_native_opennew, "opennew", 2);       js_setglobal(J, "opennew");
     js_newcfunction(J, mujs_native_off, "off", 1);               js_setglobal(J, "off");
+    js_newcfunction(J, mujs_native_yankurl, "yankurl", 1);       js_setglobal(J, "yankurl");
+    js_newcfunction(J, mujs_native_root, "root", 1);             js_setglobal(J, "root");
+    js_newcfunction(J, mujs_native_branch, "branch", 1);         js_setglobal(J, "branch");
 
     /* `selected(...)` -- a call (not a bare value): selected() means
      * every loop's current cursor item; selected("MSG","RESULT") means
@@ -768,6 +1063,34 @@ static char *mujs__emit_site(const mujs_site_t *s) {
                 mujs__json_escape(out, cap, &n, b->sel_loops[li]);
             }
             n += snprintf(out + n, cap - n, "]");
+        } else if (strcmp(b->kind, "yankurl") == 0) {
+            n += snprintf(out + n, cap - n, ", hasTarget: %s", b->has_target ? "true" : "false");
+            if (b->has_target) {
+                n += snprintf(out + n, cap - n, ", targetKind: ");
+                mujs__json_escape(out, cap, &n, b->target_kind);
+                if (strcmp(b->target_kind, "selector") == 0 || strcmp(b->target_kind, "function") == 0) {
+                    n += snprintf(out + n, cap - n, ", targetValue: ");
+                    /* selector is a string; function is a real captured
+                     * function -- both cases were already validated by
+                     * mujs__resolve_target, so embed accordingly. */
+                    if (strcmp(b->target_kind, "function") == 0)
+                        n += snprintf(out + n, cap - n, "(%s)", b->value);
+                    else
+                        mujs__json_escape(out, cap, &n, b->value);
+                } else if (strcmp(b->target_kind, "goto") == 0) {
+                    n += snprintf(out + n, cap - n, ", targetDir: ");
+                    mujs__json_escape(out, cap, &n, b->dir);
+                    n += snprintf(out + n, cap - n, ", targetLoop: ");
+                    mujs__json_escape(out, cap, &n, b->loopname);
+                } else if (strcmp(b->target_kind, "selected") == 0) {
+                    n += snprintf(out + n, cap - n, ", targetSelLoops: [");
+                    for (int li = 0; li < b->sel_loop_count; li++) {
+                        if (li) { out[n++] = ','; out[n++] = ' '; }
+                        mujs__json_escape(out, cap, &n, b->sel_loops[li]);
+                    }
+                    n += snprintf(out + n, cap - n, "]");
+                }
+            }
         }
         n += snprintf(out + n, cap - n, " }%s\n", (i + 1 < s->binding_count) ? "," : "");
     }
@@ -786,7 +1109,9 @@ static char *mujs__emit_site(const mujs_site_t *s) {
 
 static void mujs_compile_site(build_t *b, const char *path) {
     long len;
-    char *raw = build__read_file(path, &len);
+    char *file_raw = build__read_file(path, &len);
+    char *raw = mujs__apply_aliases(file_raw); /* alias.js substitutions, before anything else */
+    free(file_raw);
 
     mujs_dsl_t dsl;
     memset(&dsl, 0, sizeof(dsl));
@@ -794,6 +1119,11 @@ static void mujs_compile_site(build_t *b, const char *path) {
     if (!dsl.J) { fprintf(stderr, "mujscompiler: js_newstate failed\n"); exit(1); }
     js_setcontext(dsl.J, &dsl);
     mujs__register_natives(dsl.J);
+
+    if (js_dostring(dsl.J, MUJS_PRELUDE)) {
+        fprintf(stderr, "mujscompiler: internal error loading prelude:\n  %s\n", js_trystring(dsl.J, -1, "error"));
+        exit(1);
+    }
 
     char *js = mujs__preprocess(raw, &dsl);
     free(raw);

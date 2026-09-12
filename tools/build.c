@@ -12,7 +12,8 @@ listmatch(
     );
 
 listgrant(
-    "window.close"
+    "window.close",
+    "GM_setClipboard"
     );
 
 listextra(
