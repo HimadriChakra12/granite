@@ -439,6 +439,20 @@ function isEditableTarget(el) {
 	return el.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+// document.activeElement stops at a shadow host -- for a real input
+// living inside an OPEN shadow root (e.g. a Ctrl+K search overlay built
+// with attachShadow({mode:'open'})), activeElement reports the host
+// <div>, never the actual focused <input> inside it. Descending through
+// .shadowRoot.activeElement (recursively, in case of nested shadow
+// trees) finds the real focused element instead.
+function getDeepActiveElement() {
+	var el = document.activeElement;
+	while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+		el = el.shadowRoot.activeElement;
+	}
+	return el;
+}
+
 function resetKeyBuffer() {
 	keyBuffer = "";
 	if (keyTimer) { clearTimeout(keyTimer); keyTimer = null; }
@@ -455,20 +469,31 @@ function clearAllHighlights() {
 }
 
 document.addEventListener("keydown", function (ev) {
-	// Checked against BOTH ev.target and document.activeElement, not
-	// just one -- rich-text editors (Instagram's Lexical editor is one)
-	// do brief internal focus/blur churn where the two can momentarily
-	// disagree. Relying on only one left a gap where a key like the
-	// trailing "g" in "bang" could get swallowed as a potential prefix
-	// of a binding like "gg" instead of being typed, while very much
-	// still inside the input as far as the user could tell.
-	var editing = isEditableTarget(ev.target) || isEditableTarget(document.activeElement);
+	// event.target is retargeted to the shadow HOST for any listener
+	// outside the shadow tree -- same blind spot as activeElement, same
+	// fix: composedPath()[0] is the actual originating element,
+	// piercing an open shadow boundary (a closed one hides it by the
+	// shadow author's own deliberate choice, which nothing here can or
+	// should override).
+	var realTarget = (typeof ev.composedPath === "function" && ev.composedPath()[0]) || ev.target;
+
+	// Checked against ev.target, document.activeElement, AND their
+	// shadow-DOM-aware equivalents -- rich-text editors (Instagram's
+	// Lexical editor is one) do brief internal focus/blur churn where
+	// plain ev.target/activeElement can momentarily disagree, and a
+	// shadow-DOM overlay (Instagram's own Ctrl+K search, for one) hides
+	// the real focused element from both entirely unless you descend
+	// into shadowRoot.activeElement.
+	var deepActive = getDeepActiveElement();
+	var editing = isEditableTarget(realTarget) || isEditableTarget(ev.target) ||
+		isEditableTarget(document.activeElement) || isEditableTarget(deepActive);
 
 	// Escape always exits "insert mode" AND breaks any active loop/goto
 	// cursor -- checked before the editable-target bailout below, since
 	// that's precisely when it's needed.
 	if (ev.key === "Escape") {
 		if (editing) {
+			if (deepActive && deepActive.blur) deepActive.blur();
 			if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 			if (ev.target && ev.target.blur) ev.target.blur();
 		}

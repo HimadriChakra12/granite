@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      8.0.0
+// @version      8.1.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
@@ -360,6 +360,14 @@ function isEditableTarget(el) {
 	return el.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+function getDeepActiveElement() {
+	var el = document.activeElement;
+	while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+		el = el.shadowRoot.activeElement;
+	}
+	return el;
+}
+
 function resetKeyBuffer() {
 	keyBuffer = "";
 	if (keyTimer) { clearTimeout(keyTimer); keyTimer = null; }
@@ -374,10 +382,15 @@ function clearAllHighlights() {
 }
 
 document.addEventListener("keydown", function (ev) {
-	var editing = isEditableTarget(ev.target) || isEditableTarget(document.activeElement);
+	var realTarget = (typeof ev.composedPath === "function" && ev.composedPath()[0]) || ev.target;
+
+	var deepActive = getDeepActiveElement();
+	var editing = isEditableTarget(realTarget) || isEditableTarget(ev.target) ||
+		isEditableTarget(document.activeElement) || isEditableTarget(deepActive);
 
 	if (ev.key === "Escape") {
 		if (editing) {
+			if (deepActive && deepActive.blur) deepActive.blur();
 			if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 			if (ev.target && ev.target.blur) ev.target.blur();
 		}
