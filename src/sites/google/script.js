@@ -6,7 +6,7 @@ define GOOGLE {
     focus(k, goto(prev, "RESULT"))
     click(Enter, selected())
 
-    focus(gi, "input#searchbox")
+    focus(gi, "textarea")
 
     scroll(gg, up, full)
     scroll(G, down, full)

@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      8.1.0
+// @version      8.2.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
 // @grant        GM_setClipboard
-// @//NAME       //Description
+// @icon         https://static.wikia.nocookie.net/minecraft/images/0/0b/PolishedGraniteNew.png/revision/latest/scale-to-width/360?cb=20190903225756
 // @run-at       document-start
 // ==/UserScript==
 
@@ -506,7 +506,7 @@ Sites.register({
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
     { keys: "Enter", action: "click", kind: "selected", loops: [] },
-    { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
+    { keys: "gi", action: "focus", kind: "selector", value: "textarea" },
     { keys: "gg", action: "scroll", kind: "scroll", dir: "up", amount: Infinity },
     { keys: "G", action: "scroll", kind: "scroll", dir: "down", amount: Infinity }
   ]

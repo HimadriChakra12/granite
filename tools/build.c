@@ -17,7 +17,7 @@ listgrant(
     );
 
 listextra(
-    { "//NAME", "//Description" },
+    { "icon", "https://static.wikia.nocookie.net/minecraft/images/0/0b/PolishedGraniteNew.png/revision/latest/scale-to-width/360?cb=20190903225756" },
     );
 
 listorder(
