@@ -1,4 +1,5 @@
-define UNIVERSAL {
+define REDDIT {
+    url("*://www.reddit.com/*")
     off(scroll("j"))
     off(scroll("k"))
     off(action("r"))

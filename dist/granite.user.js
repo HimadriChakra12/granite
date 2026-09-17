@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      8.2.0
+// @version      9.0.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
@@ -232,10 +232,12 @@ function doLongpress(el) {
 }
 function doDoubleclick(el) {
 	if (!el) return;
-	el.click();
-	fireMouseEvent(el, "dblclick");
+	var ev = new Event("dblclick", {
+		bubbles: true,
+		cancelable: true
+	});
+	el.dispatchEvent(ev);
 }
-
 function doScroll(dir, amount) {
 	var container = document.scrollingElement || document.documentElement;
 	if (amount === Infinity) {
@@ -491,8 +493,8 @@ Sites.register({
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
     { keys: "enter", action: "click", kind: "selected", loops: ["RESULT"] },
-    { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
     { keys: "space", action: "opennew", kind: "selected", loops: ["RESULT"] },
+    { keys: "gi", action: "focus", kind: "selector", value: "input#searchbox" },
     { keys: "x", action: "action", kind: "action", dir: "close" },
     { keys: "yu", action: "action", kind: "yankurl", hasTarget: true, targetKind: "selected", targetSelLoops: ["RESULT"] }
   ]
@@ -566,8 +568,20 @@ Sites.register({
 });
 
 Sites.register({
-  name: "UNIVERSAL",
-  match: [],
+  name: "GITHUB",
+  match: ["*://github.com/search?q=*"],
+  loops: {"RESULT": "[class='Result-module__Result__I0WVD']"},
+  bindings: [
+    { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
+    { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
+    { keys: "space", action: "opennew", kind: "selected", loops: ["RESULT"] },
+    { keys: "gi", action: "click", kind: "selector", value: "SEARCH" }
+  ]
+});
+
+Sites.register({
+  name: "REDDIT",
+  match: ["*://www.reddit.com/*"],
   loops: {},
   bindings: [
     { keys: "j", action: "off", kind: "off" },

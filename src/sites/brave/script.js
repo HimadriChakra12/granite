@@ -5,9 +5,9 @@ define BRAVE {
     focus(j, goto(next, "RESULT"))
     focus(k, goto(prev, "RESULT"))
     click(enter, selected("RESULT"))
+    opennew(space, selected("RESULT"))
 
     focus(gi, "input#searchbox")
-    opennew(space, selected("RESULT"))
 
     action(x, close)
     action(yu, yankurl(selected("RESULT")))
