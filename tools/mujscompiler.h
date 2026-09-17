@@ -332,6 +332,7 @@ static char *mujs__apply_aliases(const char *src) {
 static const char *MUJS_PRELUDE =
     "var __muVars = {};\n"
     "function variable(name, selector) { __muVars[name] = selector; return selector; }\n"
+    "function get(name) { return __muVars[name]; }\n"
     "function ignore(name, extra) { return __muVars[name] + ':not(' + extra + ')'; }\n"
     "function exclude(name, extra) { return __muVars[name] + ':not(:has(' + extra + '))'; }\n"
     "function include(name, extra) { return __muVars[name] + ':has(' + extra + ')'; }\n"

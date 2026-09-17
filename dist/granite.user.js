@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      9.1.0
+// @version      10.0.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
@@ -560,9 +560,9 @@ Sites.register({
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
-    { keys: "l", action: "click", kind: "selector", value: "button[aria-label='Add to playlist']" },
+    { keys: "l", action: "click", kind: "selector", value: "div[class='XbPvmnihs9RIqUSkVHjv'] > button[aria-label='Add to Liked Songs']" },
     { keys: "L", action: "click", kind: "selector", value: "button[aria-label='Lyrics']" },
-    { keys: "m", action: "click", kind: "selector", value: "button[aria-label='Mute'] , button[aria-label='Unmute']" },
+    { keys: "m", action: "click", kind: "selector", value: "button[aria-label='Mute'], button[aria-label='Unmute']" },
     { keys: "f", action: "click", kind: "selector", value: "button[aria-label='Enter Full screen']" },
     { keys: "enter", action: "doubleclick", kind: "selected", loops: ["RESULT"] }
   ]
