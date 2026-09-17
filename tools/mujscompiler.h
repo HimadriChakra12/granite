@@ -146,6 +146,10 @@ typedef struct {
     char selector[512];
 } mujs_loop_t;
 
+#ifndef MUJS_MAX_DISABLED_DEFAULTS
+#define MUJS_MAX_DISABLED_DEFAULTS 16
+#endif
+
 typedef struct {
     char name[64];
     char match[MUJS_MAX_MATCH][256];
@@ -154,6 +158,9 @@ typedef struct {
     int  loop_count;
     mujs_binding_t bindings[MUJS_MAX_BINDINGS];
     int  binding_count;
+    int  disable_all_defaults;  /* off(defaults()) was called -- ignore ALL built-in defaults */
+    char disabled_default_keys[MUJS_MAX_DISABLED_DEFAULTS][64]; /* off(defaults(key)) -- just these */
+    int  disabled_default_key_count;
 } mujs_site_t;
 
 /* name -> exact original source of a `function NAME(...) {...}` decl,
@@ -327,7 +334,8 @@ static const char *MUJS_PRELUDE =
     "function variable(name, selector) { __muVars[name] = selector; return selector; }\n"
     "function ignore(name, extra) { return __muVars[name] + ':not(' + extra + ')'; }\n"
     "function exclude(name, extra) { return __muVars[name] + ':not(:has(' + extra + '))'; }\n"
-    "function include(name, extra) { return __muVars[name] + ':has(' + extra + ')'; }\n";
+    "function include(name, extra) { return __muVars[name] + ':has(' + extra + ')'; }\n"
+    "function branch(parentName, childName) { return __muVars[parentName] + ' > ' + __muVars[childName]; }\n";
 
 enum { MUJS_FRAME_PLAIN, MUJS_FRAME_DEFINE, MUJS_FRAME_FUNCTION };
 
@@ -345,9 +353,10 @@ static const mujs_kwspec_t MUJS_KEYWORD_ARGS[] = {
     { "navigate", 2 }, /* key, prev/next */
     { "action", 2 }, /* key, close/reload */
     { "root", 1 }, /* key only */
-    { "branch", 1 }, /* key only */
+    { "superset", 1 }, /* key only */
     { "off", 1 }, /* off(key) bare-key form; off(click(key)) is unaffected -- "click" isn't
                    * followed by ',' or ')' there, so it's correctly left unquoted */
+    { "defaults", 1 }, /* defaults(key) -- defaults() with no args is unaffected, same reasoning */
     { NULL, 0 }
 };
 
@@ -893,15 +902,17 @@ static void mujs_native_root(js_State *J) {
     js_pushundefined(J);
 }
 
-/* branch(key) -- goes up one path segment, e.g.
- * https://example.com/a/b/c -> https://example.com/a/b */
-static void mujs_native_branch(js_State *J) {
+/* superset(key) -- goes up one path segment, e.g.
+ * https://example.com/a/b/c -> https://example.com/a/b
+ * (was called branch() -- renamed so branch(parent, child) could take
+ * over that name for the CSS ">" combinator, below) */
+static void mujs_native_superset(js_State *J) {
     mujs_site_t *s = &mujs__ctx(J)->site;
     if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
     mujs_binding_t *b = &s->bindings[s->binding_count++];
-    snprintf(b->action, sizeof(b->action), "branch");
+    snprintf(b->action, sizeof(b->action), "superset");
     snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
-    snprintf(b->kind, sizeof(b->kind), "branch");
+    snprintf(b->kind, sizeof(b->kind), "superset");
     js_pushundefined(J);
 }
 
@@ -919,30 +930,76 @@ static void mujs_native_opennew(js_State *J)     { mujs__bind(J, "opennew"); }
  * declarators like root()/branch() that have no "no target given"
  * signal to detect in the first place. Either form ends up identical:
  * an explicit "unbind" entry for that key on this site. */
+/* defaults() / defaults(key) -- a VALUE, like goto()/selected(), used
+ * as off()'s argument: off(defaults()) disables every built-in default
+ * (gi/gI) on this site; off(defaults(key)) disables just that one.
+ * Performs no action itself -- off() interprets the marker. */
+static void mujs_native_defaults(js_State *J) {
+    js_newobject(J);
+    js_pushliteral(J, "__mudefaults__");
+    js_setproperty(J, -2, "$type");
+    if (!js_isundefined(J, 1)) {
+        js_copy(J, 1);
+        js_setproperty(J, -2, "key");
+    }
+}
+
+/* off(click(key)) -- OR off("key") directly, for single-argument
+ * declarators like root()/branch() that have no "no target given"
+ * signal to detect in the first place -- OR off(defaults()) /
+ * off(defaults(key)) to disable the built-in gi/gI fallbacks (in whole
+ * or in part) on this site. All three end up as an explicit override
+ * on this site: an "off" binding for a normal key, or a
+ * disable-defaults flag for the defaults() case. */
 static void mujs_native_off(js_State *J) {
     mujs_site_t *s = &mujs__ctx(J)->site;
-    const char *keys;
 
-    if (js_isstring(J, 1)) {
-        keys = js_tostring(J, 1);
-    } else if (js_isobject(J, 1)) {
+    if (js_isobject(J, 1)) {
         js_getproperty(J, 1, "$type");
-        int ok = js_isstring(J, -1) && strcmp(js_tostring(J, -1), "__muunbind__") == 0;
+        const char *type = js_isstring(J, -1) ? js_tostring(J, -1) : "";
+        int is_unbind = strcmp(type, "__muunbind__") == 0;
+        int is_defaults = strcmp(type, "__mudefaults__") == 0;
         js_pop(J, 1);
-        if (!ok) mujs__reject(J, "off() expects e.g. click(key) with no target, or a plain key string");
+
+        if (is_defaults) {
+            js_getproperty(J, 1, "key");
+            if (js_isundefined(J, -1)) {
+                s->disable_all_defaults = 1;
+            } else if (s->disabled_default_key_count < MUJS_MAX_DISABLED_DEFAULTS) {
+                snprintf(s->disabled_default_keys[s->disabled_default_key_count++],
+                         64, "%s", js_tostring(J, -1));
+            } else {
+                mujs__reject(J, "too many off(defaults(key)) calls (raise MUJS_MAX_DISABLED_DEFAULTS)");
+            }
+            js_pop(J, 1);
+            js_pushundefined(J);
+            return;
+        }
+
+        if (!is_unbind) mujs__reject(J, "off() expects e.g. click(key) with no target, a plain key string, or defaults(...)");
         js_getproperty(J, 1, "keys");
-        keys = js_tostring(J, -1);
-    } else {
-        mujs__reject(J, "off() expects e.g. click(key) with no target, or a plain key string");
-        return; /* unreachable -- mujs__reject longjmps out */
+        const char *keys = js_tostring(J, -1);
+        if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+        mujs_binding_t *b = &s->bindings[s->binding_count++];
+        snprintf(b->action, sizeof(b->action), "off");
+        snprintf(b->keys, sizeof(b->keys), "%s", keys);
+        snprintf(b->kind, sizeof(b->kind), "off");
+        js_pop(J, 1);
+        js_pushundefined(J);
+        return;
     }
 
-    if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
-    mujs_binding_t *b = &s->bindings[s->binding_count++];
-    snprintf(b->action, sizeof(b->action), "off");
-    snprintf(b->keys, sizeof(b->keys), "%s", keys);
-    snprintf(b->kind, sizeof(b->kind), "off");
-    js_pushundefined(J);
+    if (js_isstring(J, 1)) {
+        if (s->binding_count >= MUJS_MAX_BINDINGS) mujs__reject(J, "too many bindings (raise MUJS_MAX_BINDINGS)");
+        mujs_binding_t *b = &s->bindings[s->binding_count++];
+        snprintf(b->action, sizeof(b->action), "off");
+        snprintf(b->keys, sizeof(b->keys), "%s", js_tostring(J, 1));
+        snprintf(b->kind, sizeof(b->kind), "off");
+        js_pushundefined(J);
+        return;
+    }
+
+    mujs__reject(J, "off() expects e.g. click(key) with no target, a plain key string, or defaults(...)");
 }
 
 static void mujs_native_define(js_State *J) {
@@ -973,9 +1030,10 @@ static void mujs__register_natives(js_State *J) {
     js_newcfunction(J, mujs_native_doubleclick, "doubleclick", 2); js_setglobal(J, "doubleclick");
     js_newcfunction(J, mujs_native_opennew, "opennew", 2);       js_setglobal(J, "opennew");
     js_newcfunction(J, mujs_native_off, "off", 1);               js_setglobal(J, "off");
+    js_newcfunction(J, mujs_native_defaults, "defaults", 1);     js_setglobal(J, "defaults");
     js_newcfunction(J, mujs_native_yankurl, "yankurl", 1);       js_setglobal(J, "yankurl");
     js_newcfunction(J, mujs_native_root, "root", 1);             js_setglobal(J, "root");
-    js_newcfunction(J, mujs_native_branch, "branch", 1);         js_setglobal(J, "branch");
+    js_newcfunction(J, mujs_native_superset, "superset", 1);     js_setglobal(J, "superset");
 
     /* `selected(...)` -- a call (not a bare value): selected() means
      * every loop's current cursor item; selected("MSG","RESULT") means
@@ -1024,7 +1082,13 @@ static char *mujs__emit_site(const mujs_site_t *s) {
         out[n++] = ':'; out[n++] = ' ';
         mujs__json_escape(out, cap, &n, s->loops[i].selector);
     }
-    n += snprintf(out + n, cap - n, "},\n  bindings: [\n");
+    n += snprintf(out + n, cap - n, "},\n  disableDefaults: %s,\n  disabledDefaultKeys: [",
+                  s->disable_all_defaults ? "true" : "false");
+    for (int i = 0; i < s->disabled_default_key_count; i++) {
+        if (i) { out[n++] = ','; out[n++] = ' '; }
+        mujs__json_escape(out, cap, &n, s->disabled_default_keys[i]);
+    }
+    n += snprintf(out + n, cap - n, "],\n  bindings: [\n");
     for (int i = 0; i < s->binding_count; i++) {
         const mujs_binding_t *b = &s->bindings[i];
         n += snprintf(out + n, cap - n, "    { keys: ");

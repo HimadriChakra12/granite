@@ -83,6 +83,23 @@ function dedupeLastWins(bindings) {
 	return order.map(function (k) { return byKey[k]; });
 }
 
+// off(defaults()) / off(defaults(key)) disables the built-in gi/gI
+// fallbacks, in whole or in part -- collected from the active specific
+// site AND every universal site (a union: any site declaring a default
+// disabled is enough, regardless of which one).
+function defaultsFilter() {
+	var disableAll = false;
+	var disabledKeys = {};
+	function collect(site) {
+		if (!site) return;
+		if (site.disableDefaults) disableAll = true;
+		(site.disabledDefaultKeys || []).forEach(function (k) { disabledKeys[k] = true; });
+	}
+	collect(activeSite());
+	universalSites().forEach(collect);
+	return { disableAll: disableAll, disabledKeys: disabledKeys };
+}
+
 function effectiveBindings() {
 	var seen = {};
 	var result = [];
@@ -95,7 +112,11 @@ function effectiveBindings() {
 	var specific = activeSite();
 	if (specific) addAll(dedupeLastWins(specific.bindings));
 	universalSites().forEach(function (site) { addAll(dedupeLastWins(site.bindings)); });
-	addAll(DEFAULT_BINDINGS);
+
+	var filter = defaultsFilter();
+	if (!filter.disableAll) {
+		addAll(DEFAULT_BINDINGS.filter(function (b) { return !filter.disabledKeys[b.keys]; }));
+	}
 
 	return result;
 }
@@ -282,6 +303,7 @@ function doDoubleclick(el) {
 	});
 	el.dispatchEvent(ev);
 }
+
 function doScroll(dir, amount) {
 	var container = document.scrollingElement || document.documentElement;
 	if (amount === Infinity) {
@@ -345,7 +367,7 @@ function performBinding(b) {
 		location.href = location.origin;
 		return;
 	}
-	if (b.kind === "branch") {
+	if (b.kind === "superset") {
 		var path = location.pathname;
 		if (path.length > 1 && path.charAt(path.length - 1) === "/") path = path.slice(0, -1);
 		var upIdx = path.lastIndexOf("/");

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         granite
 // @namespace    https://github.com/HimadriChakra12/granite.git
-// @version      9.0.0
+// @version      9.1.0
 // @description  A userscript to do almost any type of navigation I want cause I hate vimium
 // @match        *://*/*
 // @grant        window.close
@@ -79,6 +79,19 @@ function dedupeLastWins(bindings) {
 	return order.map(function (k) { return byKey[k]; });
 }
 
+function defaultsFilter() {
+	var disableAll = false;
+	var disabledKeys = {};
+	function collect(site) {
+		if (!site) return;
+		if (site.disableDefaults) disableAll = true;
+		(site.disabledDefaultKeys || []).forEach(function (k) { disabledKeys[k] = true; });
+	}
+	collect(activeSite());
+	universalSites().forEach(collect);
+	return { disableAll: disableAll, disabledKeys: disabledKeys };
+}
+
 function effectiveBindings() {
 	var seen = {};
 	var result = [];
@@ -91,7 +104,11 @@ function effectiveBindings() {
 	var specific = activeSite();
 	if (specific) addAll(dedupeLastWins(specific.bindings));
 	universalSites().forEach(function (site) { addAll(dedupeLastWins(site.bindings)); });
-	addAll(DEFAULT_BINDINGS);
+
+	var filter = defaultsFilter();
+	if (!filter.disableAll) {
+		addAll(DEFAULT_BINDINGS.filter(function (b) { return !filter.disabledKeys[b.keys]; }));
+	}
 
 	return result;
 }
@@ -238,6 +255,7 @@ function doDoubleclick(el) {
 	});
 	el.dispatchEvent(ev);
 }
+
 function doScroll(dir, amount) {
 	var container = document.scrollingElement || document.documentElement;
 	if (amount === Infinity) {
@@ -290,7 +308,7 @@ function performBinding(b) {
 		location.href = location.origin;
 		return;
 	}
-	if (b.kind === "branch") {
+	if (b.kind === "superset") {
 		var path = location.pathname;
 		if (path.length > 1 && path.charAt(path.length - 1) === "/") path = path.slice(0, -1);
 		var upIdx = path.lastIndexOf("/");
@@ -489,6 +507,8 @@ Sites.register({
   name: "BRAVE",
   match: ["*://search.brave.com/*"],
   loops: {"RESULT": ".title.search-snippet-title.line-clamp-1.svelte-14r20fy"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
@@ -504,6 +524,8 @@ Sites.register({
   name: "GOOGLE",
   match: ["*://www.google.com/*"],
   loops: {"RESULT": "h3.LC20lb.MBeuO.DKV0Md"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
@@ -518,6 +540,8 @@ Sites.register({
   name: "GOOGLECALENDER",
   match: ["*://calendar.google.com/calendar/*"],
   loops: {"DAY": "[class='MGaLHf ChfiMc']"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "DAY" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "DAY" },
@@ -531,6 +555,8 @@ Sites.register({
   name: "SPOTIFY",
   match: ["*://open.spotify.com/*"],
   loops: {"RESULT": "[data-testid='tracklist-row']"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
@@ -546,6 +572,8 @@ Sites.register({
   name: "YOUTUBEWATCH",
   match: ["*://*.youtube.com/watch?v=*"],
   loops: {"SUGG": ".ytLockupViewModelContentImage"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "SUGG" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "SUGG" },
@@ -557,6 +585,8 @@ Sites.register({
   name: "INSTAGRAM",
   match: ["*://www.instagram.com/direct/*", "*://instagram.com/direct/*"],
   loops: {"CHAT": ".html-div.xdj266r.x14z9mp.xat24cr.x1lziwak.xexx8yu.xyri2b.x18d9i69.x1c1uobl.x6ikm8r.x10wlt62:not(:has(.x1kmbdvd))"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "gi", action: "focus", kind: "selector", value: "div[role='textbox'][aria-placeholder='Message...']" },
     { keys: "gI", action: "focus", kind: "selector", value: "input[name='searchInput']" },
@@ -571,6 +601,8 @@ Sites.register({
   name: "GITHUB",
   match: ["*://github.com/search?q=*"],
   loops: {"RESULT": "[class='Result-module__Result__I0WVD']"},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "focus", kind: "goto", dir: "next", loop: "RESULT" },
     { keys: "k", action: "focus", kind: "goto", dir: "prev", loop: "RESULT" },
@@ -583,6 +615,8 @@ Sites.register({
   name: "REDDIT",
   match: ["*://www.reddit.com/*"],
   loops: {},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "off", kind: "off" },
     { keys: "k", action: "off", kind: "off" },
@@ -596,6 +630,8 @@ Sites.register({
   name: "UNIVERSAL",
   match: [],
   loops: {},
+  disableDefaults: false,
+  disabledDefaultKeys: [],
   bindings: [
     { keys: "j", action: "scroll", kind: "scroll", dir: "down", amount: 50 },
     { keys: "k", action: "scroll", kind: "scroll", dir: "up", amount: 50 },
